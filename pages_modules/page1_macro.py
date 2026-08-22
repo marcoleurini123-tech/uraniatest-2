@@ -13,7 +13,7 @@ from backend_engine import (
 
 def render_page1():
     st.title("1. Macro Intelligence & Liquidità")
-    st.caption("Terminal EOD • Analisi quantitativa dei flussi istituzionali e regimi macroeconomici.")
+    st.caption("Terminal EOD • Plancia di Controllo Istituzionale e Regimi di Stress Sistemico.")
     
     df = load_db()
 
@@ -21,7 +21,7 @@ def render_page1():
     col_sync, _ = st.columns([1, 3])
     with col_sync:
         if st.button("🔄 SINCRONIZZA FLUSSI EOD", use_container_width=True):
-            with st.spinner("Estrazione dati reali in corso..."):
+            with st.spinner("Estrazione dati reali e calcolo proxy in corso..."):
                 d_y = fetch_yahoo_data(365)
                 d_b = fetch_bridge_data()
                 d_d = fetch_squeezemetrics()
@@ -37,7 +37,7 @@ def render_page1():
                 
                 new_df = new_df.sort_values("Data").ffill(limit=7)
                 save_db(new_df)
-                st.success("Sincronizzazione completata con successo.")
+                st.success("Sincronizzazione e calcolo metriche completati.")
                 st.rerun()
 
     st.markdown("---")
@@ -48,16 +48,57 @@ def render_page1():
 
     df = df.sort_values("Data")
 
-    # Calcolo Z-Score rigoroso a 252 sessioni (Regola 2)
+    # Calcolo Z-Score rigoroso a 252 sessioni
     if 'VIX' in df.columns:
         df['VIX_Z252'] = calculate_rolling_zscore(df['VIX'], window=252)
     if 'DXY' in df.columns:
         df['DXY_Z252'] = calculate_rolling_zscore(df['DXY'], window=252)
 
+    # --- CALCOLO INDICE DI STRESS SISTEMICO (0-100) ---
+    # Basato su VIX normalizzato, MOVE proxy e DXY Z-score
+    def compute_stress_index(row):
+        try:
+            vix_score = min(max((row.get('VIX', 15) - 10) / 30 * 40, 0), 40) # Peso 40%
+            move_score = min(max((row.get('MOVE', 100) - 80) / 70 * 30, 0), 30) # Peso 30%
+            dxy_z = abs(row.get('DXY_Z252', 0))
+            dxy_score = min(dxy_z / 3.0 * 30, 30) # Peso 30%
+            return round(vix_score + move_score + dxy_score, 1)
+        except:
+            return 50.0
+
+    df['Systemic_Stress'] = df.apply(compute_stress_index, axis=1)
     last = df.iloc[-1]
 
-    st.subheader("🚦 Monitoraggio Z-Score & Indicatori di Regime")
+    # --- SEZIONE PLANCIA DI DECISIONE & STRESS INDEX ---
+    st.subheader("🚨 Termometro di Regime & Stress Sistemico")
     
+    stress_val = last.get('Systemic_Stress', 50.0)
+    
+    col_gauge, col_info = st.columns([1, 2])
+    with col_gauge:
+        # Colore dinamico in base allo stress
+        stress_color = "#ef4444" if stress_val > 70 else ("#f59e0b" if stress_val > 45 else "#10b981")
+        st.markdown(
+            f"""
+            <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 20px; text-align: center;">
+                <p style="color: #64748b; font-size: 12px; margin-bottom: 5px;">INDICE DI STRESS SISTEMICO</p>
+                <h1 style="color: {stress_color}; font-size: 42px; margin: 0;">{stress_val} / 100</h1>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+    with col_info:
+        if stress_val > 70:
+            st.error("🔴 **REGIME RISK-OFF / PANICO:** Stress sistemico elevato. Attivazione obbligatoria delle coperture (ETF Short / ETC). Vietato accumulare su asset rischiosi.")
+        elif stress_val > 45:
+            st.warning("🟡 **REGIME DI TRANSIZIONE / STAGFLAZIONE:** Mercato incerto. Gestione attiva delle rotazioni, focus sui flussi di cassa (Covered Call) e attesa dei livelli POC.")
+        else:
+            st.success("🟢 **REGIME RISK-ON / NORMALITÀ:** Liquidità favorevole. Spazio per l'accumulo chirurgico sui minimi (es. materie prime 'all'inferno').")
+
+    st.markdown("---")
+
+    # Metric Cards tradizionali
     col1, col2, col3, col4 = st.columns(4)
     
     vix_val = last.get('VIX', np.nan)
@@ -82,13 +123,13 @@ def render_page1():
 
     move_val = last.get('MOVE', np.nan)
     col4.metric(
-        "MOVE Index", 
+        "MOVE Index (Proxy)", 
         f"{move_val:.2f}" if not pd.isna(move_val) else "N/A"
     )
 
     st.markdown("---")
 
-    # Sezione Grafici Trend Temporali (Plotly Minimali)
+    # Sezione Grafici Trend Temporali
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("📈 Trend VIX Spot (1 Anno)")
@@ -100,13 +141,13 @@ def render_page1():
             st.info("Dati VIX non disponibili.")
 
     with c2:
-        st.subheader("🌐 Trend DXY (US Dollar Index)")
-        if 'DXY' in df.columns and not df['DXY'].dropna().empty:
-            fig_dxy = px.line(df.tail(252), x="Data", y="DXY", color_discrete_sequence=['#3b82f6'])
-            fig_dxy.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#f8fafc', margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig_dxy, use_container_width=True)
+        st.subheader("🌐 Trend Indice di Stress Sistemico")
+        if 'Systemic_Stress' in df.columns and not df['Systemic_Stress'].dropna().empty:
+            fig_stress = px.line(df.tail(252), x="Data", y="Systemic_Stress", color_discrete_sequence=['#f59e0b'])
+            fig_stress.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#f8fafc', margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig_stress, use_container_width=True)
         else:
-            st.info("Dati DXY non disponibili.")
+            st.info("Dati Stress non disponibili.")
 
     st.markdown("---")
     st.subheader("Tabella Master EOD & Serie Storiche Normalizzate")
