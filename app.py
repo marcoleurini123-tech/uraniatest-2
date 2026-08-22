@@ -9,27 +9,36 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Stile visivo e iniezione immagine di sfondo (CSS Istituzionale)
+BACKGROUND_IMAGE_URL = "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?q=80&w=2000&auto=format&fit=crop"
+
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background: linear-gradient(rgba(3, 7, 18, 0.92), rgba(3, 7, 18, 0.95)), url("{BACKGROUND_IMAGE_URL}");
+        background-size: cover;
+        background-position: center;
+        color: #f8fafc;
+    }}
+    .login-box {{
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        padding: 40px;
+        text-align: center;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # Gestione della sicurezza e autenticazione (Regola 3)
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.markdown(
-        """
-        <style>
-        .stApp { background-color: #030712 !important; color: #f8fafc; }
-        .login-box {
-            background: #0f172a;
-            border: 1px solid #1e293b;
-            border-radius: 8px;
-            padding: 30px;
-            text-align: center;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-    
     _, col_c, _ = st.columns([1, 1.2, 1])
     with col_c:
         st.markdown(
@@ -82,19 +91,13 @@ if nav.startswith("1."):
         render_page1()
     except ImportError:
         st.title("1. Macro Intelligence & Liquidità")
-        st.info("Compartimento stagno 1 in fase di implementazione UI.")
+        st.error("Errore critico: modulo 'page1_macro.py' non trovato nella cartella pages_modules.")
     except Exception as e:
         st.error(f"Errore di esecuzione nel Modulo 1: {str(e)}")
 
 elif nav.startswith("2."):
-    try:
-        from pages_modules.page2_zscore_cot import render_page2
-        render_page2()
-    except ImportError:
-        st.title("2. Z-Score & COT Lab (CFTC)")
-        st.info("Compartimento stagno 2 in fase di implementazione UI.")
-    except Exception as e:
-        st.error(f"Errore di esecuzione nel Modulo 2: {str(e)}")
+    st.title("2. Z-Score & COT Lab (CFTC)")
+    st.info("Compartimento stagno 2 in fase di sviluppo.")
 
 elif nav.startswith("3."):
     st.title("3. Quant Lab (Studi Storici)")
