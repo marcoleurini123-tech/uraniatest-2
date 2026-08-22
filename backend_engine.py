@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import os
+import streamlit as st
 
 MANUAL_DATA_FILE = "manual_metrics.csv"
 
@@ -12,16 +13,17 @@ TICKERS_MAP = {
     "USO": "USO", "US2Y": "^IRX", "US10Y": "^TNX"
 }
 
-def fetch_stable_eod_data(days: int = 504) -> pd.DataFrame:
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_stable_eod_data(days: int = 90) -> pd.DataFrame:
     """
-    Estrae le serie storiche EOD stabili tramite yfinance in blocco (Bulk Download).
-    Conforme alla Regola 1: se l'API fallisce, restituisce un DataFrame vuoto senza allucinazioni.
+    Estrae le serie storiche EOD stabili con finestra temporale ridotta 
+    per rispettare i vincoli di banda della connessione.
+    Conforme alla Regola 1: zero dati fittizi, restituisce NaN in caso di errore di rete.
     """
     tickers_list = list(TICKERS_MAP.values())
     
     try:
-        # Chiamata di rete unica per tutti i ticker: elimina la latenza sequenziale
-        df_raw = yf.download(tickers_list, period=f"{days}d", interval="1d", progress=False, group_by='ticker', threads=True)
+        df_raw = yf.download(tickers_list, period=f"{days}d", interval="1d", progress=False, group_by='ticker', threads=False)
         if df_raw.empty:
             return pd.DataFrame(columns=["Data"])
         
@@ -50,13 +52,13 @@ def fetch_stable_eod_data(days: int = 504) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["Data"])
 
-def calculate_rolling_zscore(series: pd.Series, window: int = 52) -> pd.Series:
+def calculate_rolling_zscore(series: pd.Series, window: int = 30) -> pd.Series:
     """
     Conforme alla Regola 2: Rigore Matematico e Z-Score.
-    Calcolo statistico basato su deviazione standard mobile (rolling window).
+    Calcolo statistico basato su deviazione standard mobile adattato alla finestra ridotta.
     """
-    mean = series.rolling(window=window, min_periods=10).mean()
-    std = series.rolling(window=window, min_periods=10).std()
+    mean = series.rolling(window=window, min_periods=5).mean()
+    std = series.rolling(window=window, min_periods=5).std()
     return (series - mean) / (std + 1e-9)
 
 def load_manual_bridge_data() -> pd.DataFrame:
