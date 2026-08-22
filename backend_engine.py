@@ -1,93 +1,87 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
+import io
 import os
 
-MANUAL_DATA_FILE = "manual_metrics.csv"
-CACHE_DATA_FILE = "macro_engine_data.csv"
+DB_FILE = "macro_data.csv"
+GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
 
-TICKERS_MAP = {
-    "VIX": "^VIX", "VVIX": "^VVIX", "SKEW": "^SKEW", 
-    "DXY": "DX-Y.NYB", "SPY": "SPY", "RSP": "RSP", 
-    "HYG": "HYG", "TLT": "TLT", "LQD": "LQD", "GLD": "GLD", 
-    "USO": "USO", "US2Y": "^IRX", "US10Y": "^TNX"
-}
+COLUMNS = [
+    "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
+    "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", "Net_Liquidity", "M2"
+]
 
-def load_cached_eod_data() -> pd.DataFrame:
-    """Carica istantaneamente i dati dalla cache locale per evitare blocchi di rete all'avvio."""
-    if os.path.exists(CACHE_DATA_FILE):
+def load_db() -> pd.DataFrame:
+    """Carica istantaneamente il database locale per azzerare i tempi di avvio."""
+    if os.path.exists(DB_FILE):
         try:
-            df = pd.read_csv(CACHE_DATA_FILE)
+            df = pd.read_csv(DB_FILE)
             df['Data'] = pd.to_datetime(df['Data']).dt.normalize()
-            return df
+            for col in COLUMNS:
+                if col not in df.columns: 
+                    df[col] = 0.0
+            return df.sort_values("Data")
         except Exception:
             pass
-    return pd.DataFrame(columns=["Data"])
+    return pd.DataFrame(columns=COLUMNS)
 
-def fetch_stable_eod_data(force_update: bool = False) -> pd.DataFrame:
-    """
-    Estrae le serie storiche EOD con protezione anti-blocco (fail-fast).
-    Conforme alla Regola 1: se la rete fallisce o va in timeout, restituisce 
-    i dati in cache o un DataFrame vuoto, senza generare dati fittizi.
-    """
-    if not force_update:
-        cached_df = load_cached_eod_data()
-        if not cached_df.empty:
-            return cached_df
+def save_db(df: pd.DataFrame):
+    """Salva il database consolidato su disco."""
+    df = df.drop_duplicates(subset=['Data'], keep='last').sort_values("Data")
+    df.to_csv(DB_FILE, index=False)
 
-    data_frames = {}
-    for key, ticker in TICKERS_MAP.items():
-        try:
-            # Download singolo con periodo ridotto per garantire la risposta immediata
-            df_t = yf.download(ticker, period="90d", interval="1d", progress=False, timeout=5)
-            if not df_t.empty and 'Close' in df_t.columns:
-                s = df_t['Close']
-                if isinstance(s, pd.DataFrame):
-                    s = s.iloc[:, 0]
-                data_frames[key] = s.dropna()
-        except Exception:
-            continue
+def fetch_bridge_data() -> pd.DataFrame:
+    """Estrae i dati macro da Google Bridge con gestione rigorosa delle eccezioni."""
+    try:
+        response = requests.get(GOOGLE_BRIDGE_URL, timeout=10)
+        response.raise_for_status()
+        df_bridge = pd.read_csv(io.StringIO(response.text))
+        df_bridge.columns = df_bridge.columns.str.strip()
+        df_bridge = df_bridge.rename(columns={'Data': 'Data', 'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity', 'M2': 'M2'})
+        
+        if pd.api.types.is_numeric_dtype(df_bridge['Data']):
+            df_bridge['Data'] = pd.to_datetime(df_bridge['Data'], unit='D', origin='1899-12-30')
+        else:
+            df_bridge['Data'] = pd.to_datetime(df_bridge['Data'], errors='coerce')
+            
+        df_bridge['Data'] = df_bridge['Data'].dt.normalize()
+        for col in ['Net_Liquidity', 'M2']:
+            if col in df_bridge.columns: 
+                df_bridge[col] = pd.to_numeric(df_bridge[col], errors='coerce')
+                
+        return df_bridge.dropna(subset=['Data', 'Net_Liquidity'])
+    except Exception:
+        return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2"])
 
-    if not data_frames:
-        return load_cached_eod_data()
+def fetch_yahoo_data(days: int = 60) -> pd.DataFrame:
+    """Estrae in blocco (bulk) i dati da Yahoo Finance in un'unica chiamata di rete."""
+    tickers = {
+        "VIX9D": "^VIX9D", "VIX": "^VIX", "VIX3M": "^VIX3M", "VIX6M": "^VIX6M", 
+        "VIX1Y": "^VIX1Y", "VVIX": "^VVIX", "SKEW": "^SKEW", "DXY": "DX-Y.NYB", 
+        "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", "HYG": "HYG", 
+        "TLT": "TLT", "P_C": "^PCCR", "GLD": "GLD", "USO": "USO"
+    }
+    try:
+        raw_data = yf.download(list(tickers.values()), period=f"{days}d", interval="1d", progress=False)
+        if raw_data.empty or 'Close' not in raw_data.columns:
+            return pd.DataFrame(columns=["Data"])
+            
+        data = raw_data['Close']
+        data = data.rename(columns={v: k for k, v in tickers.items()})
+        data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
+        return data.reset_index().rename(columns={'Date': 'Data', 'index': 'Data'})
+    except Exception:
+        return pd.DataFrame(columns=["Data"])
 
-    data = pd.DataFrame(data_frames)
-    data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
-    data = data.reset_index().rename(columns={'index': 'Data', 'Date': 'Data'})
-    
-    # Salva la cache locale per i futuri avvii istantanei
-    data.to_csv(CACHE_DATA_FILE, index=False)
-    return data
-
-def calculate_rolling_zscore(series: pd.Series, window: int = 30) -> pd.Series:
-    """
-    Conforme alla Regola 2: Rigore Matematico e Z-Score.
-    Calcolo statistico basato su deviazione standard mobile (rolling window).
-    """
-    mean = series.rolling(window=window, min_periods=5).mean()
-    std = series.rolling(window=window, min_periods=5).std()
-    return (series - mean) / (std + 1e-9)
-
-def load_manual_bridge_data() -> pd.DataFrame:
-    """Gestisce il bridge di input manuale per metriche volatili o delistate."""
-    if os.path.exists(MANUAL_DATA_FILE):
-        try:
-            df_man = pd.read_csv(MANUAL_DATA_FILE)
-            df_man['Data'] = pd.to_datetime(df_man['Data']).dt.normalize()
-            return df_man
-        except Exception:
-            pass
-    return pd.DataFrame(columns=["Data", "VIX1D", "PCCR", "DIX", "GEX", "MOVE"])
-
-def save_manual_bridge_data(new_row_dict: dict) -> pd.DataFrame:
-    """Salva o aggiorna i dati manuali inseriti dall'utente nel file di bridge locale."""
-    df_man = load_manual_bridge_data()
-    target_date = pd.to_datetime(new_row_dict["Data"]).normalize()
-    
-    df_man = df_man[df_man['Data'] != target_date]
-    new_row = pd.DataFrame([new_row_dict])
-    new_row['Data'] = pd.to_datetime(new_row['Data']).dt.normalize()
-    
-    df_man = pd.concat([df_man, new_row], ignore_index=True).sort_values("Data")
-    df_man.to_csv(MANUAL_DATA_FILE, index=False)
-    return df_man
+def fetch_squeezemetrics() -> pd.DataFrame:
+    """Estrae DIX e GEX reali da SqueezeMetrics."""
+    try:
+        url = "https://squeezemetrics.com/monitor/static/DIX.csv"
+        df_d = pd.read_csv(url, timeout=10).tail(31).rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
+        df_d['Data'] = pd.to_datetime(df_d['Data']).dt.normalize()
+        df_d['DIX'] = df_d['DIX'] * 100
+        return df_d
+    except Exception:
+        return pd.DataFrame(columns=["Data", "DIX", "GEX"])
