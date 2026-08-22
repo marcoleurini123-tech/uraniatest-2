@@ -74,11 +74,11 @@ def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
         data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
         df_y = data.reset_index().rename(columns={'Date': 'Data', 'index': 'Data'})
 
-        # --- CORREZIONE PROXY ECONOMETRICI (Taratura Reale) ---
-        # 1. Proxy MOVE Index normalizzato sulla volatilità dei Treasury (TLT) scalata su range tipico 90-110
+        # --- CALCOLO FORZATO PROXY ECONOMETRICI ---
+        # 1. Proxy MOVE Index normalizzato
         if 'TLT' in df_y.columns:
             tlt_vol = df_y['TLT'].pct_change().rolling(window=21).std() * np.sqrt(252) * 100
-            df_y['MOVE'] = 85 + (tlt_vol * 3.5) # Taratura corretta per evitare picchi folli
+            df_y['MOVE'] = 85 + (tlt_vol * 3.5)
 
         # 2. Proxy GEX basato sui flussi direzionali normalizzati di SPY
         if 'SPY' in df_y.columns:
@@ -89,7 +89,7 @@ def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
         if 'SPY' in df_y.columns and 'HYG' in df_y.columns:
             ratio = df_y['SPY'] / df_y['HYG']
             df_y['DIX'] = 43 + (ratio - ratio.rolling(window=50).mean()) * 50
-            df_y['DIX'] = df_y['DIX'].clip(38, 58) # Range realistico Dark Pool
+            df_y['DIX'] = df_y['DIX'].clip(38, 58)
 
         return df_y
     except Exception:
