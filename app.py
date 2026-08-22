@@ -1,5 +1,6 @@
 import streamlit as st
 import hmac
+import os
 
 # Configurazione globale e layout minimale (Tema Scuro Istituzionale)
 st.set_page_config(
@@ -9,26 +10,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Stile visivo e iniezione immagine di sfondo (CSS Istituzionale)
-BACKGROUND_IMAGE_URL = "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?q=80&w=2000&auto=format&fit=crop"
-
+# Stile visivo globale e tema scuro
 st.markdown(
-    f"""
+    """
     <style>
-    .stApp {{
-        background: linear-gradient(rgba(3, 7, 18, 0.92), rgba(3, 7, 18, 0.95)), url("{BACKGROUND_IMAGE_URL}");
-        background-size: cover;
-        background-position: center;
-        color: #f8fafc;
-    }}
-    .login-box {{
-        background: rgba(15, 23, 42, 0.85);
+    .stApp { background-color: #030712; color: #f8fafc; }
+    .login-box {
+        background: #0f172a;
         border: 1px solid #1e293b;
         border-radius: 8px;
         padding: 40px;
         text-align: center;
         box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-    }}
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -41,6 +35,8 @@ if "authenticated" not in st.session_state:
 if not st.session_state.authenticated:
     _, col_c, _ = st.columns([1, 1.2, 1])
     with col_c:
+        if os.path.exists("urania_logo.png"):
+            st.image("urania_logo.png", width=140)
         st.markdown(
             """
             <div class="login-box">
@@ -64,6 +60,8 @@ if not st.session_state.authenticated:
 
 # Sidebar di navigazione a compartimenti stagni (Regola 4)
 with st.sidebar:
+    if os.path.exists("urania_logo.png"):
+        st.image("urania_logo.png", width=100)
     st.markdown("### 🛡️ URANIA SYSTEM")
     st.caption("Engine EOD • Z-Score & Volumetric Lab")
     
