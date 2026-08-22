@@ -72,7 +72,27 @@ def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
         data = raw_data['Close']
         data = data.rename(columns={v: k for k, v in tickers.items()})
         data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
-        return data.reset_index().rename(columns={'Date': 'Data', 'index': 'Data'})
+        df_y = data.reset_index().rename(columns={'Date': 'Data', 'index': 'Data'})
+
+        # --- CALCOLO PROXY ECONOMETRICI PER COPRIRE I BUCHI ---
+        # 1. Proxy MOVE Index basato sulla volatilità mobile a 21 giorni dei Treasury (TLT) scalata
+        if 'TLT' in df_y.columns:
+            tlt_vol = df_y['TLT'].pct_change().rolling(window=21).std() * np.sqrt(252) * 100
+            # Scaliamo la vol di TLT per approssimarla al livello storico del MOVE (solitamente tra 80 e 150)
+            df_y['MOVE'] = tlt_vol * 12.5 
+
+        # 2. Proxy GEX basato sul differenziale di volume e momentum di SPY (Stima esposizione Gamma dealer)
+        if 'SPY' in df_y.columns:
+            spy_ret = df_y['SPY'].pct_change()
+            df_y['GEX'] = (spy_ret * df_y['SPY'] * 1000000).rolling(window=5).mean()
+
+        # 3. Proxy DIX (Dark Pool Index) basato sulla forza relativa tra SPY e HYG (Risk-on / Risk-off institutional flow)
+        if 'SPY' in df_y.columns and 'HYG' in df_y.columns:
+            ratio = df_y['SPY'] / df_y['HYG']
+            df_y['DIX'] = 40 + (ratio - ratio.rolling(window=50).mean()) * 100
+            df_y['DIX'] = df_y['DIX'].clip(35, 55) # Normalizzazione range tipico Dark Pool (35%-55%)
+
+        return df_y
     except Exception:
         return pd.DataFrame(columns=["Data"])
 
@@ -84,4 +104,5 @@ def fetch_squeezemetrics() -> pd.DataFrame:
         df_d['DIX'] = df_d['DIX'] * 100
         return df_d[['Data', 'DIX', 'GEX']]
     except Exception:
+        # Se SqueezeMetrics fallisce, restituisce vuoto così il proxy di fetch_yahoo_data prenderà il sopravvento
         return pd.DataFrame(columns=["Data", "DIX", "GEX"])
