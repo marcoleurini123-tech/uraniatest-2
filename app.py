@@ -37,7 +37,6 @@ if not st.session_state.authenticated:
     with col_c:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         if os.path.exists("urania_logo.png"):
-            # Logo centrale grande senza scritte o loghi di default
             st.image("urania_logo.png", use_container_width=True)
         
         st.markdown(
@@ -53,7 +52,12 @@ if not st.session_state.authenticated:
         
         if st.button("SBLOCCA TERMINALE", use_container_width=True):
             try:
-                if hmac.compare_digest(pwd, st.secrets["APP_PASSWORD"]):
+                # Conversione in byte per garantire il confronto perfetto con caratteri speciali (?, #)
+                input_bytes = pwd.encode('utf-8')
+                secret_pwd = str(st.secrets["APP_PASSWORD"])
+                secret_bytes = secret_pwd.encode('utf-8')
+                
+                if hmac.compare_digest(input_bytes, secret_bytes):
                     st.session_state.authenticated = True
                     st.rerun()
                 else:
