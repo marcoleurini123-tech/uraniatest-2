@@ -14,14 +14,14 @@ COLUMNS = [
 ]
 
 def load_db() -> pd.DataFrame:
-    """Carica istantaneamente il database locale per azzerare i tempi di avvio."""
+    """Carica il database locale con controllo di integrità strutturale."""
     if os.path.exists(DB_FILE):
         try:
             df = pd.read_csv(DB_FILE)
             df['Data'] = pd.to_datetime(df['Data']).dt.normalize()
             for col in COLUMNS:
                 if col not in df.columns: 
-                    df[col] = 0.0
+                    df[col] = np.nan
             return df.sort_values("Data")
         except Exception:
             pass
@@ -31,6 +31,16 @@ def save_db(df: pd.DataFrame):
     """Salva il database consolidato su disco."""
     df = df.drop_duplicates(subset=['Data'], keep='last').sort_values("Data")
     df.to_csv(DB_FILE, index=False)
+
+def calculate_rolling_zscore(series: pd.Series, window: int = 252) -> pd.Series:
+    """
+    Regola 2: Rigore Matematico e Z-Score.
+    Calcolo statistico basato su deviazione standard mobile (rolling window 52 settimane).
+    Nessuna soglia percentuale fissa o arbitraria.
+    """
+    mean = series.rolling(window=window, min_periods=30).mean()
+    std = series.rolling(window=window, min_periods=30).std()
+    return (series - mean) / (std + 1e-9)
 
 def fetch_bridge_data() -> pd.DataFrame:
     """Estrae i dati macro da Google Bridge con gestione rigorosa delle eccezioni."""
@@ -55,8 +65,8 @@ def fetch_bridge_data() -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2"])
 
-def fetch_yahoo_data(days: int = 60) -> pd.DataFrame:
-    """Estrae in blocco (bulk) i dati da Yahoo Finance in un'unica chiamata di rete."""
+def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
+    """Estrae in blocco (bulk) i dati storici necessari per il calcolo dello Z-Score a 1 anno."""
     tickers = {
         "VIX9D": "^VIX9D", "VIX": "^VIX", "VIX3M": "^VIX3M", "VIX6M": "^VIX6M", 
         "VIX1Y": "^VIX1Y", "VVIX": "^VVIX", "SKEW": "^SKEW", "DXY": "DX-Y.NYB", 
@@ -79,7 +89,7 @@ def fetch_squeezemetrics() -> pd.DataFrame:
     """Estrae DIX e GEX reali da SqueezeMetrics."""
     try:
         url = "https://squeezemetrics.com/monitor/static/DIX.csv"
-        df_d = pd.read_csv(url, timeout=10).tail(31).rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
+        df_d = pd.read_csv(url, timeout=10).tail(252).rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
         df_d['Data'] = pd.to_datetime(df_d['Data']).dt.normalize()
         df_d['DIX'] = df_d['DIX'] * 100
         return df_d
