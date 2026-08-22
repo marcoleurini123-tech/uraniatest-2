@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 from backend_engine import (
     load_db, 
     save_db, 
@@ -16,7 +17,7 @@ def render_page1():
     
     df = load_db()
 
-    # Sezione di controllo sincronizzazione
+    # Barra di controllo e sincronizzazione flussi
     col_sync, _ = st.columns([1, 3])
     with col_sync:
         if st.button("🔄 SINCRONIZZA FLUSSI EOD", use_container_width=True):
@@ -84,6 +85,28 @@ def render_page1():
         "MOVE Index", 
         f"{move_val:.2f}" if not pd.isna(move_val) else "N/A"
     )
+
+    st.markdown("---")
+
+    # Sezione Grafici Trend Temporali (Plotly Minimali)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("📈 Trend VIX Spot (1 Anno)")
+        if 'VIX' in df.columns and not df['VIX'].dropna().empty:
+            fig_vix = px.line(df.tail(252), x="Data", y="VIX", color_discrete_sequence=['#ef4444'])
+            fig_vix.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#f8fafc', margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig_vix, use_container_width=True)
+        else:
+            st.info("Dati VIX non disponibili.")
+
+    with c2:
+        st.subheader("🌐 Trend DXY (US Dollar Index)")
+        if 'DXY' in df.columns and not df['DXY'].dropna().empty:
+            fig_dxy = px.line(df.tail(252), x="Data", y="DXY", color_discrete_sequence=['#3b82f6'])
+            fig_dxy.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#f8fafc', margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig_dxy, use_container_width=True)
+        else:
+            st.info("Dati DXY non disponibili.")
 
     st.markdown("---")
     st.subheader("Tabella Master EOD & Serie Storiche Normalizzate")
