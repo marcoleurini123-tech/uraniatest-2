@@ -35,18 +35,22 @@ if "authenticated" not in st.session_state:
 if not st.session_state.authenticated:
     _, col_c, _ = st.columns([1, 1.2, 1])
     with col_c:
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         if os.path.exists("urania_logo.png"):
-            st.image("urania_logo.png", width=140)
+            # Logo centrale grande senza scritte o loghi di default
+            st.image("urania_logo.png", use_container_width=True)
+        
         st.markdown(
             """
             <div class="login-box">
-                <h3>🛡️ URANIA SYSTEM</h3>
-                <p style="color: #64748b; font-size: 12px;">Macro Quantitative Terminal • EOD Execution Engine</p>
-            </div>
+                <p style="color: #64748b; font-size: 12px; letter-spacing: 1px; margin-bottom: 20px;">MACRO QUANTITATIVE TERMINAL • EOD ENGINE</p>
             """,
             unsafe_allow_html=True
         )
-        pwd = st.text_input("Password di Accesso:", type="password", placeholder="••••••••••••")
+        
+        pwd = st.text_input("Password di Accesso:", type="password", placeholder="••••••••••••", label_visibility="collapsed")
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        
         if st.button("SBLOCCA TERMINALE", use_container_width=True):
             try:
                 if hmac.compare_digest(pwd, st.secrets["APP_PASSWORD"]):
@@ -56,14 +60,14 @@ if not st.session_state.authenticated:
                     st.error("Credenziali non valide.")
             except KeyError:
                 st.error("Errore critico: chiave 'APP_PASSWORD' mancante nel vault st.secrets.")
+        st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 # Sidebar di navigazione a compartimenti stagni (Regola 4)
 with st.sidebar:
     if os.path.exists("urania_logo.png"):
-        st.image("urania_logo.png", width=100)
-    st.markdown("### 🛡️ URANIA SYSTEM")
-    st.caption("Engine EOD • Z-Score & Volumetric Lab")
+        st.image("urania_logo.png", use_container_width=True)
+    st.markdown("---")
     
     nav = st.radio(
         "Moduli di Analisi:",
