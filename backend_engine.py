@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import os
-import streamlit as st
 
 MANUAL_DATA_FILE = "manual_metrics.csv"
+CACHE_DATA_FILE = "macro_engine_data.csv"
 
 TICKERS_MAP = {
     "VIX": "^VIX", "VVIX": "^VVIX", "SKEW": "^SKEW", 
@@ -13,49 +13,56 @@ TICKERS_MAP = {
     "USO": "USO", "US2Y": "^IRX", "US10Y": "^TNX"
 }
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_stable_eod_data(days: int = 90) -> pd.DataFrame:
+def load_cached_eod_data() -> pd.DataFrame:
+    """Carica istantaneamente i dati dalla cache locale per evitare blocchi di rete all'avvio."""
+    if os.path.exists(CACHE_DATA_FILE):
+        try:
+            df = pd.read_csv(CACHE_DATA_FILE)
+            df['Data'] = pd.to_datetime(df['Data']).dt.normalize()
+            return df
+        except Exception:
+            pass
+    return pd.DataFrame(columns=["Data"])
+
+def fetch_stable_eod_data(force_update: bool = False) -> pd.DataFrame:
     """
-    Estrae le serie storiche EOD stabili con finestra temporale ridotta 
-    per rispettare i vincoli di banda della connessione.
-    Conforme alla Regola 1: zero dati fittizi, restituisce NaN in caso di errore di rete.
+    Estrae le serie storiche EOD con protezione anti-blocco (fail-fast).
+    Conforme alla Regola 1: se la rete fallisce o va in timeout, restituisce 
+    i dati in cache o un DataFrame vuoto, senza generare dati fittizi.
     """
-    tickers_list = list(TICKERS_MAP.values())
+    if not force_update:
+        cached_df = load_cached_eod_data()
+        if not cached_df.empty:
+            return cached_df
+
+    data_frames = {}
+    for key, ticker in TICKERS_MAP.items():
+        try:
+            # Download singolo con periodo ridotto per garantire la risposta immediata
+            df_t = yf.download(ticker, period="90d", interval="1d", progress=False, timeout=5)
+            if not df_t.empty and 'Close' in df_t.columns:
+                s = df_t['Close']
+                if isinstance(s, pd.DataFrame):
+                    s = s.iloc[:, 0]
+                data_frames[key] = s.dropna()
+        except Exception:
+            continue
+
+    if not data_frames:
+        return load_cached_eod_data()
+
+    data = pd.DataFrame(data_frames)
+    data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
+    data = data.reset_index().rename(columns={'index': 'Data', 'Date': 'Data'})
     
-    try:
-        df_raw = yf.download(tickers_list, period=f"{days}d", interval="1d", progress=False, group_by='ticker', threads=False)
-        if df_raw.empty:
-            return pd.DataFrame(columns=["Data"])
-        
-        data_frames = {}
-        for key, ticker in TICKERS_MAP.items():
-            try:
-                if len(tickers_list) == 1:
-                    s = df_raw['Close']
-                else:
-                    s = df_raw[ticker]['Close']
-                
-                if not s.empty:
-                    if isinstance(s, pd.DataFrame):
-                        s = s.iloc[:, 0]
-                    data_frames[key] = s.dropna()
-            except Exception:
-                continue
-
-        if not data_frames:
-            return pd.DataFrame(columns=["Data"])
-
-        data = pd.DataFrame(data_frames)
-        data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
-        return data.reset_index().rename(columns={'index': 'Data', 'Date': 'Data'})
-        
-    except Exception:
-        return pd.DataFrame(columns=["Data"])
+    # Salva la cache locale per i futuri avvii istantanei
+    data.to_csv(CACHE_DATA_FILE, index=False)
+    return data
 
 def calculate_rolling_zscore(series: pd.Series, window: int = 30) -> pd.Series:
     """
     Conforme alla Regola 2: Rigore Matematico e Z-Score.
-    Calcolo statistico basato su deviazione standard mobile adattato alla finestra ridotta.
+    Calcolo statistico basato su deviazione standard mobile (rolling window).
     """
     mean = series.rolling(window=window, min_periods=5).mean()
     std = series.rolling(window=window, min_periods=5).std()
