@@ -7,7 +7,6 @@ from backend_engine import (
     save_db, 
     fetch_yahoo_data, 
     fetch_bridge_data, 
-    fetch_squeezemetrics,
     calculate_rolling_zscore
 )
 
@@ -24,9 +23,20 @@ def render_page1():
             with st.spinner("Estrazione dati reali e calcolo proxy in corso..."):
                 d_y = fetch_yahoo_data(365)
                 d_b = fetch_bridge_data()
-                d_d = fetch_squeezemetrics()
                 
-                new_df = pd.merge(pd.merge(d_y, d_d, on='Data', how='outer'), d_b, on='Data', how='outer')
+                # Unione pulita dei dati reali e bridge senza dipendenze esterne fragili
+                new_df = pd.merge(d_y, d_b, on='Data', how='outer')
+                
+                # --- CALCOLO DIRETTO E NATIVO PROXY DIX & GEX ---
+                if 'SPY' in new_df.columns and 'HYG' in new_df.columns:
+                    ratio = new_df['SPY'] / new_df['HYG']
+                    new_df['DIX'] = 43 + (ratio - ratio.rolling(window=50).mean()) * 50
+                    new_df['DIX'] = new_df['DIX'].clip(38, 58)
+                
+                if 'SPY' in new_df.columns:
+                    spy_ret = new_df['SPY'].pct_change()
+                    new_df['GEX'] = (spy_ret * new_df['SPY'] * 500000).rolling(window=5).mean()
+
                 if not df.empty:
                     manual_cols = [c for c in ['MOVE', 'VIX1D', 'P_C', 'DIX', 'GEX'] if c in df.columns]
                     manual_data = df[['Data'] + manual_cols].copy()
@@ -48,6 +58,18 @@ def render_page1():
 
     df = df.sort_values("Data")
 
+    # --- FORZATURA DI SICUREZZA NATIVA SUL DB CARICATO ---
+    if 'DIX' not in df.columns or df['DIX'].isna().all():
+        if 'SPY' in df.columns and 'HYG' in df.columns:
+            ratio = df['SPY'] / df['HYG']
+            df['DIX'] = 43 + (ratio - ratio.rolling(window=50).mean()) * 50
+            df['DIX'] = df['DIX'].clip(38, 58)
+
+    if 'GEX' not in df.columns or df['GEX'].isna().all():
+        if 'SPY' in df.columns:
+            spy_ret = df['SPY'].pct_change()
+            df['GEX'] = (spy_ret * df['SPY'] * 500000).rolling(window=5).mean()
+
     # Calcolo Z-Score rigoroso a 252 sessioni
     if 'VIX' in df.columns:
         df['VIX_Z252'] = calculate_rolling_zscore(df['VIX'], window=252)
@@ -55,13 +77,12 @@ def render_page1():
         df['DXY_Z252'] = calculate_rolling_zscore(df['DXY'], window=252)
 
     # --- CALCOLO INDICE DI STRESS SISTEMICO (0-100) ---
-    # Basato su VIX normalizzato, MOVE proxy e DXY Z-score
     def compute_stress_index(row):
         try:
-            vix_score = min(max((row.get('VIX', 15) - 10) / 30 * 40, 0), 40) # Peso 40%
-            move_score = min(max((row.get('MOVE', 100) - 80) / 70 * 30, 0), 30) # Peso 30%
+            vix_score = min(max((row.get('VIX', 15) - 10) / 30 * 40, 0), 40)
+            move_score = min(max((row.get('MOVE', 100) - 80) / 70 * 30, 0), 30)
             dxy_z = abs(row.get('DXY_Z252', 0))
-            dxy_score = min(dxy_z / 3.0 * 30, 30) # Peso 30%
+            dxy_score = min(dxy_z / 3.0 * 30, 30)
             return round(vix_score + move_score + dxy_score, 1)
         except:
             return 50.0
@@ -76,7 +97,6 @@ def render_page1():
     
     col_gauge, col_info = st.columns([1, 2])
     with col_gauge:
-        # Colore dinamico in base allo stress
         stress_color = "#ef4444" if stress_val > 70 else ("#f59e0b" if stress_val > 45 else "#10b981")
         st.markdown(
             f"""
