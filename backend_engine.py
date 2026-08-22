@@ -14,7 +14,6 @@ COLUMNS = [
 ]
 
 def load_db() -> pd.DataFrame:
-    """Carica il database locale con controllo di integrità strutturale."""
     if os.path.exists(DB_FILE):
         try:
             df = pd.read_csv(DB_FILE)
@@ -28,22 +27,15 @@ def load_db() -> pd.DataFrame:
     return pd.DataFrame(columns=COLUMNS)
 
 def save_db(df: pd.DataFrame):
-    """Salva il database consolidato su disco."""
     df = df.drop_duplicates(subset=['Data'], keep='last').sort_values("Data")
     df.to_csv(DB_FILE, index=False)
 
 def calculate_rolling_zscore(series: pd.Series, window: int = 252) -> pd.Series:
-    """
-    Regola 2: Rigore Matematico e Z-Score.
-    Calcolo statistico basato su deviazione standard mobile (rolling window 52 settimane).
-    Nessuna soglia percentuale fissa o arbitraria.
-    """
     mean = series.rolling(window=window, min_periods=30).mean()
     std = series.rolling(window=window, min_periods=30).std()
     return (series - mean) / (std + 1e-9)
 
 def fetch_bridge_data() -> pd.DataFrame:
-    """Estrae i dati macro da Google Bridge con gestione rigorosa delle eccezioni."""
     try:
         response = requests.get(GOOGLE_BRIDGE_URL, timeout=10)
         response.raise_for_status()
@@ -66,7 +58,6 @@ def fetch_bridge_data() -> pd.DataFrame:
         return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2"])
 
 def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
-    """Estrae in blocco (bulk) i dati storici necessari per il calcolo dello Z-Score a 1 anno."""
     tickers = {
         "VIX9D": "^VIX9D", "VIX": "^VIX", "VIX3M": "^VIX3M", "VIX6M": "^VIX6M", 
         "VIX1Y": "^VIX1Y", "VVIX": "^VVIX", "SKEW": "^SKEW", "DXY": "DX-Y.NYB", 
@@ -86,12 +77,11 @@ def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
         return pd.DataFrame(columns=["Data"])
 
 def fetch_squeezemetrics() -> pd.DataFrame:
-    """Estrae DIX e GEX reali da SqueezeMetrics."""
     try:
         url = "https://squeezemetrics.com/monitor/static/DIX.csv"
         df_d = pd.read_csv(url, timeout=10).tail(252).rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
         df_d['Data'] = pd.to_datetime(df_d['Data']).dt.normalize()
         df_d['DIX'] = df_d['DIX'] * 100
-        return df_d
+        return df_d[['Data', 'DIX', 'GEX']]
     except Exception:
         return pd.DataFrame(columns=["Data", "DIX", "GEX"])
