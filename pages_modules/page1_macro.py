@@ -33,7 +33,7 @@ def render_manual_institutional_override(df):
         submit = st.form_submit_button("1. Salva nel Database Locale")
         
         if submit:
-            target_ts = pd.to_datetime(target_date)
+            target_ts = pd.to_datetime(target_date).normalize()
             
             if not df.empty and target_ts in df['Data'].values:
                 idx = df.index[df['Data'] == target_ts].tolist()[0]
@@ -95,8 +95,14 @@ def render_page1():
         st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione.")
         return
 
+    # ---------------------------------------------------------
+    # NORMALIZZAZIONE VETTORIALE RUNTIME
+    # ---------------------------------------------------------
     df = df.sort_values("Data").reset_index(drop=True)
-    market_cols = [c for c in ['VIX', 'DXY', 'MOVE'] if c in df.columns]
+    
+    # Propaga gli ultimi dati validi su weekend o giornate vuote
+    num_cols = ['VIX', 'DXY', 'MOVE', 'DIX', 'GEX', 'P_C']
+    market_cols = [c for c in num_cols if c in df.columns]
     if market_cols:
         df[market_cols] = df[market_cols].ffill(limit=7)
 
