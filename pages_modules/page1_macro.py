@@ -95,13 +95,9 @@ def render_page1():
         st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione.")
         return
 
-    # ---------------------------------------------------------
-    # NORMALIZZAZIONE VETTORIALE RUNTIME PER MERCATI CHIUSI
-    # ---------------------------------------------------------
     df = df.sort_values("Data").reset_index(drop=True)
     market_cols = [c for c in ['VIX', 'DXY', 'MOVE'] if c in df.columns]
     if market_cols:
-        # Propaga il prezzo di venerdì su sabato e domenica esclusivamente in ram.
         df[market_cols] = df[market_cols].ffill(limit=7)
 
     if 'VIX' in df.columns:
@@ -200,7 +196,3 @@ def render_page1():
     display_df = df.sort_values("Data", ascending=False).head(30).copy()
     display_df['Data'] = display_df['Data'].dt.strftime('%Y-%m-%d')
     st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-if __name__ == "__main__":
-    st.set_page_config(layout="wide", page_title="Macro Intelligence")
-    render_page1()
