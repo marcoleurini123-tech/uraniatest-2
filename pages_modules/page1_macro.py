@@ -13,9 +13,12 @@ from backend_engine import (
 )
 
 def render_manual_institutional_override(df):
-    st.markdown("---")
-    st.subheader("⚙️ Override Manuale Dati Istituzionali")
-    st.caption("Sistema di fallback: immettere i dati manualmente in caso di interruzione API per DIX, GEX e P/C.")
+    """
+    Terminale di immissione manuale posizionato al vertice della gerarchia di esecuzione.
+    I dati inseriti qui acquisiscono priorità assoluta sulle successive estrazioni API.
+    """
+    st.markdown("### ⚙️ Immissione Manuale Dati Istituzionali")
+    st.caption("Inserire i dati EOD prima della sincronizzazione. I valori immessi non verranno sovrascritti dalle API.")
     
     with st.form("override_istituzionale"):
         c1, c2, c3, c4 = st.columns(4)
@@ -29,7 +32,7 @@ def render_manual_institutional_override(df):
         with c4:
             pc_input = st.number_input("P/C Ratio", min_value=0.0, max_value=5.0, step=0.01, format="%.2f")
             
-        submit = st.form_submit_button("Sovrascrivi Database EOD")
+        submit = st.form_submit_button("1. Salva nel Database Locale")
         
         if submit:
             target_ts = pd.to_datetime(target_date)
@@ -47,7 +50,7 @@ def render_manual_institutional_override(df):
             
             df = df.sort_values("Data").reset_index(drop=True)
             save_db(df)
-            st.success(f"Aggiornamento eseguito per la sessione {target_ts.strftime('%Y-%m-%d')}")
+            st.success(f"Dato blindato nel DB per la sessione {target_ts.strftime('%Y-%m-%d')}. Ora puoi sincronizzare i flussi storici.")
             st.rerun()
 
 def render_page1():
@@ -56,36 +59,43 @@ def render_page1():
     
     df = load_db()
 
+    # 1. Plancia di Override posta in cima all'interfaccia
+    render_manual_institutional_override(df)
+    
+    st.markdown("---")
+    
+    # 2. Pulsante di Sincronizzazione Flussi API
     col_sync, _ = st.columns([1, 3])
     with col_sync:
-        if st.button("🔄 SINCRONIZZA FLUSSI EOD", use_container_width=True):
-            with st.spinner("Estrazione dati e calcolo vettoriale in corso..."):
+        if st.button("🔄 2. SINCRONIZZA FLUSSI EOD", use_container_width=True):
+            with st.spinner("Estrazione dati dalle API e allineamento database..."):
                 d_y = fetch_yahoo_data(365)
                 d_b = fetch_bridge_data()
                 d_sq = fetch_squeezemetrics_data()
                 d_pc = fetch_cboe_pc_ratio()
                 
-                # Outer merge asettico per consolidare tutti i timestamp
-                new_df = pd.merge(d_y, d_b, on='Data', how='outer')
+                # Outer merge dei flussi appena scaricati
+                fetched_df = pd.merge(d_y, d_b, on='Data', how='outer')
                 if not d_sq.empty:
-                    new_df = pd.merge(new_df, d_sq, on='Data', how='outer')
+                    fetched_df = pd.merge(fetched_df, d_sq, on='Data', how='outer')
                 if not d_pc.empty:
-                    new_df = pd.merge(new_df, d_pc, on='Data', how='outer')
+                    fetched_df = pd.merge(fetched_df, d_pc, on='Data', how='outer')
 
-                # Preservazione dei dati manuali storici
                 if not df.empty:
-                    manual_cols = [c for c in ['MOVE', 'DIX', 'GEX', 'P_C'] if c in df.columns]
-                    if manual_cols:
-                        manual_data = df[['Data'] + manual_cols].copy()
-                        new_df = pd.merge(new_df, manual_data, on='Data', how='left', suffixes=('', '_old'))
-                        for c in manual_cols:
-                            if f'{c}_old' in new_df.columns:
-                                new_df[c] = new_df[c].fillna(new_df[f'{c}_old'])
-                                new_df = new_df.drop(columns=[f'{c}_old'])
-                
-                new_df = new_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
-                save_db(new_df)
-                st.success("Sincronizzazione completata.")
+                    # Logica di precedenza assoluta: il DataFrame 'df' (che contiene i tuoi dati manuali)
+                    # diventa la base. I dati scaricati vengono usati solo per colmare i campi vuoti (NaN).
+                    fetched_df = fetched_df.set_index('Data')
+                    local_df = df.set_index('Data')
+                    
+                    # combine_first dà priorità assoluta al DataFrame chiamante (local_df)
+                    final_df = local_df.combine_first(fetched_df).reset_index()
+                else:
+                    final_df = fetched_df
+
+                # Pulizia finale e forward fill massimo per coprire buchi (max 7 giorni es. weekend)
+                final_df = final_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
+                save_db(final_df)
+                st.success("Sincronizzazione completata: i dati manuali sono stati preservati.")
                 st.rerun()
 
     st.markdown("---")
@@ -96,7 +106,7 @@ def render_page1():
 
     df = df.sort_values("Data").reset_index(drop=True)
 
-    # Vettorizzazione Z-Score
+    # 3. Logica Matematica e Z-Score (Vettorizzata)
     if 'VIX' in df.columns:
         df['VIX_Z252'] = calculate_rolling_zscore(df['VIX'], window=252)
     if 'DXY' in df.columns:
@@ -115,6 +125,7 @@ def render_page1():
     df['Systemic_Stress'] = df.apply(compute_stress_index, axis=1)
     last = df.iloc[-1]
 
+    # 4. Plancia Termometro Regimi
     st.subheader("🚨 Termometro di Regime & Stress Sistemico")
     stress_val = last.get('Systemic_Stress', 50.0)
     
@@ -141,6 +152,7 @@ def render_page1():
 
     st.markdown("---")
 
+    # 5. Metriche EOD Correnti
     col1, col2, col3, col4 = st.columns(4)
     vix_val = last.get('VIX', np.nan)
     vix_z = last.get('VIX_Z252', np.nan)
@@ -157,6 +169,7 @@ def render_page1():
 
     st.markdown("---")
 
+    # 6. Grafici a Serie Storica
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("📈 Trend VIX Spot (1 Anno)")
@@ -179,12 +192,10 @@ def render_page1():
     st.markdown("---")
     st.subheader("Tabella Master EOD & Serie Storiche Normalizzate")
     
-    # Formattazione per la visualizzazione senza alterare i tipi originali del dataframe
+    # Render della tabella per verifica visiva (il DB non subisce cast a stringa)
     display_df = df.sort_values("Data", ascending=False).head(30).copy()
     display_df['Data'] = display_df['Data'].dt.strftime('%Y-%m-%d')
     st.dataframe(display_df, use_container_width=True, hide_index=True)
-    
-    render_manual_institutional_override(df)
 
 if __name__ == "__main__":
     st.set_page_config(layout="wide", page_title="Macro Intelligence")
