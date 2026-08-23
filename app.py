@@ -42,7 +42,6 @@ def render_manual_institutional_override(df):
                 df = pd.concat([df, new_row], ignore_index=True)
                 idx = df.index[-1]
             
-            # Aggiornamento condizionale rigoroso
             if dix_input > 0: df.at[idx, 'DIX'] = dix_input
             if gex_input != 0: df.at[idx, 'GEX'] = gex_input
             if pc_input > 0: df.at[idx, 'P_C'] = pc_input
@@ -96,7 +95,14 @@ def render_page1():
         st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione.")
         return
 
+    # ---------------------------------------------------------
+    # NORMALIZZAZIONE VETTORIALE RUNTIME PER MERCATI CHIUSI
+    # ---------------------------------------------------------
     df = df.sort_values("Data").reset_index(drop=True)
+    market_cols = [c for c in ['VIX', 'DXY', 'MOVE'] if c in df.columns]
+    if market_cols:
+        # Propaga il prezzo di venerdì su sabato e domenica esclusivamente in ram.
+        df[market_cols] = df[market_cols].ffill(limit=7)
 
     if 'VIX' in df.columns:
         df['VIX_Z252'] = calculate_rolling_zscore(df['VIX'], window=252)
@@ -107,7 +113,6 @@ def render_page1():
         try:
             vix_score = min(max((row.get('VIX', 15) - 10) / 30 * 40, 0), 40)
             
-            # Il MOVE calcolato matematicamente (Assicurarsi che il dato non sia NaN)
             move_val = row.get('MOVE', 100)
             if pd.isna(move_val):
                 move_val = 100
@@ -172,7 +177,8 @@ def render_page1():
     with c1:
         st.subheader("📈 Trend VIX Spot (1 Anno)")
         if 'VIX' in df.columns and not df['VIX'].dropna().empty:
-            fig_vix = px.line(df.tail(252), x="Data", y="VIX", color_discrete_sequence=['#ef4444'], template='plotly_dark')
+            fig_vix = px.line(df.dropna(subset=['VIX']).tail(252), x="Data", y="VIX", color_discrete_sequence=['#ef4444'], template='plotly_dark')
+            fig_vix.update_traces(connectgaps=True)
             fig_vix.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_vix, use_container_width=True)
         else:
@@ -181,7 +187,8 @@ def render_page1():
     with c2:
         st.subheader("🌐 Trend Indice di Stress Sistemico")
         if 'Systemic_Stress' in df.columns and not df['Systemic_Stress'].dropna().empty:
-            fig_stress = px.line(df.tail(252), x="Data", y="Systemic_Stress", color_discrete_sequence=['#f59e0b'], template='plotly_dark')
+            fig_stress = px.line(df.dropna(subset=['Systemic_Stress']).tail(252), x="Data", y="Systemic_Stress", color_discrete_sequence=['#f59e0b'], template='plotly_dark')
+            fig_stress.update_traces(connectgaps=True)
             fig_stress.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_stress, use_container_width=True)
         else:
