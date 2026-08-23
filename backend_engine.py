@@ -18,7 +18,8 @@ def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
 def fetch_yahoo_data(days=365):
-    tickers = {"^VIX": "VIX", "DX-Y.NYB": "DXY"}
+    # Aggiunto ^MOVE. Se assente, yfinance solleva eccezione e il ticker viene scartato asetticamente.
+    tickers = {"^VIX": "VIX", "DX-Y.NYB": "DXY", "^MOVE": "MOVE"}
     df_list = []
     
     for t, name in tickers.items():
@@ -41,10 +42,9 @@ def fetch_yahoo_data(days=365):
         df['Data'] = pd.to_datetime(df['Data']).dt.tz_localize(None)
         return df
         
-    return pd.DataFrame(columns=['Data', 'VIX', 'DXY'])
+    return pd.DataFrame(columns=['Data', 'VIX', 'DXY', 'MOVE'])
 
 def fetch_bridge_data():
-    # Placeholder per dati MOVE. Nessun dato fittizio. Restituisce frame vuoto.
     return pd.DataFrame(columns=['Data', 'MOVE'])
 
 def fetch_squeezemetrics_data():
@@ -59,8 +59,7 @@ def fetch_squeezemetrics_data():
         df = df.rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
         df['DIX'] = df['DIX'] * 100
         return df[['Data', 'DIX', 'GEX']].sort_values('Data')
-    except Exception as e:
-        print(f"Errore SqueezeMetrics: {e}")
+    except Exception:
         return pd.DataFrame(columns=['Data', 'DIX', 'GEX'])
 
 def fetch_cboe_pc_ratio():
@@ -74,8 +73,7 @@ def fetch_cboe_pc_ratio():
         df = df.dropna(subset=['DATE'])
         df = df.rename(columns={'DATE': 'Data', 'P/C Ratio': 'P_C'})
         return df[['Data', 'P_C']].sort_values('Data')
-    except Exception as e:
-        print(f"Errore CBOE: {e}")
+    except Exception:
         return pd.DataFrame(columns=['Data', 'P_C'])
 
 def calculate_rolling_zscore(series, window=252):
