@@ -9,25 +9,31 @@ from datetime import datetime, timedelta
 DB_FILE = "macro_database.csv"
 GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
 
+# Definizione rigida delle matrici ammesse nel Database
 COLUMNS = [
     "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
     "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", 
     "Net_Liquidity", "M2"
 ]
 
+# (Regola 3: Nessuna API Key in chiaro necessaria per le fonti pubbliche sottostanti)
+
 def load_db():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
         
+        # Normalizzazione Temporale Assoluta
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
         if df['Data'].dt.tz is not None:
             df['Data'] = df['Data'].dt.tz_localize(None)
         df['Data'] = df['Data'].dt.normalize()
         
+        # Allineamento Matrice (Previene fallimenti su CSV legacy)
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = np.nan
                 
+        # Igienizzazione Algebrica
         num_cols = [c for c in COLUMNS if c != "Data"]
         for c in num_cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -40,46 +46,57 @@ def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
 def fetch_yahoo_data(days=365):
-    # Mappatura rigorosa di tutti i nodi della Term Structure
-    tickers = {
+    tickers_map = {
         "^VIX1D": "VIX1D", "^VIX9D": "VIX9D", "^VIX": "VIX", "^VIX3M": "VIX3M", 
         "^VIX6M": "VIX6M", "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", 
         "DX-Y.NYB": "DXY", "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", 
         "HYG": "HYG", "TLT": "TLT", "GLD": "GLD", "USO": "USO"
     }
-    df_list = []
     
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
-    for t, name in tickers.items():
-        try:
-            data = yf.download(
-                t, 
-                start=start_date.strftime('%Y-%m-%d'), 
-                end=end_date.strftime('%Y-%m-%d'), 
-                progress=False
-            )
-            
-            if not data.empty and 'Close' in data.columns:
-                temp = data['Close'].copy()
-                if isinstance(temp, pd.DataFrame):
-                    temp = temp.iloc[:, 0]
-                
-                temp.name = name
-                df_list.append(temp)
-        except Exception:
-            pass
-            
-    if df_list:
-        df = pd.concat(df_list, axis=1).reset_index()
+    try:
+        # 1. Estrazione massiva vettorializzata (Bypassa limitatore HTTP 429)
+        data = yf.download(
+            tickers=list(tickers_map.keys()), 
+            start=start_date.strftime('%Y-%m-%d'), 
+            end=end_date.strftime('%Y-%m-%d'), 
+            progress=False
+        )
+        
+        if data.empty:
+            return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
+
+        # 2. Parsing Asettico del MultiIndex
+        if isinstance(data.columns, pd.MultiIndex):
+            if 'Close' in data.columns.get_level_values(0):
+                df = data['Close'].copy()
+            elif 'Close' in data.columns.get_level_values(1):
+                df = data.xs('Close', level=1, axis=1)
+            else:
+                return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
+        else:
+            if 'Close' in data.columns:
+                df = pd.DataFrame(data['Close'])
+            else:
+                df = data.copy()
+
+        df = df.rename(columns=tickers_map)
+        
+        # 3. Allineamento Indice e Normalizzazione Vettoriale
+        df = df.reset_index()
         col_date = [c for c in df.columns if str(c).lower() == 'date']
         if col_date:
             df = df.rename(columns={col_date[0]: 'Data'})
             df['Data'] = pd.to_datetime(df['Data']).dt.tz_localize(None).dt.normalize()
-            return df
             
-    return pd.DataFrame(columns=['Data'] + list(tickers.values()))
+        cols_to_keep = ['Data'] + [c for c in df.columns if c in tickers_map.values()]
+        return df[cols_to_keep]
+        
+    except Exception as e:
+        print(f"Errore Critico YF Fetch: {e}")
+        return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
 
 def fetch_bridge_data():
     try:
