@@ -10,8 +10,20 @@ DB_FILE = "macro_database.csv"
 def load_db():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
-        df['Data'] = pd.to_datetime(df['Data'])
-        return df
+        
+        # 1. Igienizzazione Temporale: forza a datetime, rimuove fusi, tronca a mezzanotte
+        df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+        if df['Data'].dt.tz is not None:
+            df['Data'] = df['Data'].dt.tz_localize(None)
+        df['Data'] = df['Data'].dt.normalize()
+        
+        # 2. Igienizzazione Algebrica: forza i campi numerici distruggendo stringhe spurie (es. virgole europee)
+        num_cols = ['VIX', 'DXY', 'MOVE', 'DIX', 'GEX', 'P_C']
+        for c in num_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+                
+        return df.dropna(subset=['Data'])
     return pd.DataFrame(columns=['Data'])
 
 def save_db(df):
@@ -31,14 +43,14 @@ def fetch_yahoo_data(days=365):
                 else:
                     temp = data['Close'].rename(name)
                 df_list.append(temp)
-        except Exception as e:
-            print(f"Errore Yahoo Finance per {t}: {e}")
+        except Exception:
             pass
             
     if df_list:
         df = pd.concat(df_list, axis=1).reset_index()
         df = df.rename(columns={'Date': 'Data'})
-        df['Data'] = pd.to_datetime(df['Data']).dt.tz_localize(None)
+        # Normalizzazione assoluta per il merge
+        df['Data'] = pd.to_datetime(df['Data']).dt.tz_localize(None).dt.normalize()
         return df
         
     return pd.DataFrame(columns=['Data', 'VIX', 'DXY', 'MOVE'])
@@ -53,7 +65,8 @@ def fetch_squeezemetrics_data():
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text))
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        # Allineamento temporale
+        df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.normalize()
         df = df.dropna(subset=['date'])
         df = df.rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
         df['DIX'] = df['DIX'] * 100
@@ -68,7 +81,8 @@ def fetch_cboe_pc_ratio():
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text), skiprows=2)
-        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+        # Allineamento temporale
+        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce').dt.normalize()
         df = df.dropna(subset=['DATE'])
         df = df.rename(columns={'DATE': 'Data', 'P/C Ratio': 'P_C'})
         return df[['Data', 'P_C']].sort_values('Data')
