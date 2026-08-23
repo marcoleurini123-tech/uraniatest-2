@@ -18,7 +18,6 @@ def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
 def fetch_yahoo_data(days=365):
-    # Aggiunto ^MOVE. Se assente, yfinance solleva eccezione e il ticker viene scartato asetticamente.
     tickers = {"^VIX": "VIX", "DX-Y.NYB": "DXY", "^MOVE": "MOVE"}
     df_list = []
     
