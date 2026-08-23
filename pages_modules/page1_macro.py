@@ -13,24 +13,22 @@ from backend_engine import (
 )
 
 def render_manual_institutional_override(df):
-    """
-    Terminale di immissione manuale posizionato al vertice della gerarchia di esecuzione.
-    I dati inseriti qui acquisiscono priorità assoluta sulle successive estrazioni API.
-    """
     st.markdown("### ⚙️ Immissione Manuale Dati Istituzionali")
     st.caption("Inserire i dati EOD prima della sincronizzazione. I valori immessi non verranno sovrascritti dalle API.")
     
     with st.form("override_istituzionale"):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         
         with c1:
             target_date = st.date_input("Data Riferimento", pd.Timestamp.today())
         with c2:
             dix_input = st.number_input("DIX (%)", min_value=0.0, max_value=100.0, step=0.1, format="%.1f")
         with c3:
-            gex_input = st.number_input("GEX (Valore Assoluto)", step=1000000.0, format="%.0f")
+            gex_input = st.number_input("GEX (Val Assoluto)", step=1000000.0, format="%.0f")
         with c4:
             pc_input = st.number_input("P/C Ratio", min_value=0.0, max_value=5.0, step=0.01, format="%.2f")
+        with c5:
+            move_input = st.number_input("MOVE Index", min_value=0.0, max_value=300.0, step=0.1, format="%.2f")
             
         submit = st.form_submit_button("1. Salva nel Database Locale")
         
@@ -47,10 +45,11 @@ def render_manual_institutional_override(df):
             if dix_input > 0: df.at[idx, 'DIX'] = dix_input
             if gex_input != 0: df.at[idx, 'GEX'] = gex_input
             if pc_input > 0: df.at[idx, 'P_C'] = pc_input
+            if move_input > 0: df.at[idx, 'MOVE'] = move_input
             
             df = df.sort_values("Data").reset_index(drop=True)
             save_db(df)
-            st.success(f"Dato blindato nel DB per la sessione {target_ts.strftime('%Y-%m-%d')}. Ora puoi sincronizzare i flussi storici.")
+            st.success(f"Dati blindati nel DB per la sessione {target_ts.strftime('%Y-%m-%d')}.")
             st.rerun()
 
 def render_page1():
@@ -59,12 +58,10 @@ def render_page1():
     
     df = load_db()
 
-    # 1. Plancia di Override posta in cima all'interfaccia
     render_manual_institutional_override(df)
     
     st.markdown("---")
     
-    # 2. Pulsante di Sincronizzazione Flussi API
     col_sync, _ = st.columns([1, 3])
     with col_sync:
         if st.button("🔄 2. SINCRONIZZA FLUSSI EOD", use_container_width=True):
@@ -74,7 +71,6 @@ def render_page1():
                 d_sq = fetch_squeezemetrics_data()
                 d_pc = fetch_cboe_pc_ratio()
                 
-                # Outer merge dei flussi appena scaricati
                 fetched_df = pd.merge(d_y, d_b, on='Data', how='outer')
                 if not d_sq.empty:
                     fetched_df = pd.merge(fetched_df, d_sq, on='Data', how='outer')
@@ -82,17 +78,12 @@ def render_page1():
                     fetched_df = pd.merge(fetched_df, d_pc, on='Data', how='outer')
 
                 if not df.empty:
-                    # Logica di precedenza assoluta: il DataFrame 'df' (che contiene i tuoi dati manuali)
-                    # diventa la base. I dati scaricati vengono usati solo per colmare i campi vuoti (NaN).
                     fetched_df = fetched_df.set_index('Data')
                     local_df = df.set_index('Data')
-                    
-                    # combine_first dà priorità assoluta al DataFrame chiamante (local_df)
                     final_df = local_df.combine_first(fetched_df).reset_index()
                 else:
                     final_df = fetched_df
 
-                # Pulizia finale e forward fill massimo per coprire buchi (max 7 giorni es. weekend)
                 final_df = final_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
                 save_db(final_df)
                 st.success("Sincronizzazione completata: i dati manuali sono stati preservati.")
@@ -104,9 +95,15 @@ def render_page1():
         st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione.")
         return
 
+    # ---------------------------------------------------------
+    # NORMALIZZAZIONE VETTORIALE RUNTIME PER MERCATI CHIUSI
+    # ---------------------------------------------------------
     df = df.sort_values("Data").reset_index(drop=True)
+    market_cols = [c for c in ['VIX', 'DXY', 'MOVE'] if c in df.columns]
+    if market_cols:
+        # Propaga il prezzo di venerdì su sabato e domenica esclusivamente in ram.
+        df[market_cols] = df[market_cols].ffill(limit=7)
 
-    # 3. Logica Matematica e Z-Score (Vettorizzata)
     if 'VIX' in df.columns:
         df['VIX_Z252'] = calculate_rolling_zscore(df['VIX'], window=252)
     if 'DXY' in df.columns:
@@ -115,9 +112,15 @@ def render_page1():
     def compute_stress_index(row):
         try:
             vix_score = min(max((row.get('VIX', 15) - 10) / 30 * 40, 0), 40)
-            move_score = min(max((row.get('MOVE', 100) - 80) / 70 * 30, 0), 30)
+            
+            move_val = row.get('MOVE', 100)
+            if pd.isna(move_val):
+                move_val = 100
+            move_score = min(max((move_val - 80) / 70 * 30, 0), 30)
+            
             dxy_z = abs(row.get('DXY_Z252', 0)) if not pd.isna(row.get('DXY_Z252')) else 0
             dxy_score = min(dxy_z / 3.0 * 30, 30)
+            
             return round(vix_score + move_score + dxy_score, 1)
         except Exception:
             return 50.0
@@ -125,7 +128,6 @@ def render_page1():
     df['Systemic_Stress'] = df.apply(compute_stress_index, axis=1)
     last = df.iloc[-1]
 
-    # 4. Plancia Termometro Regimi
     st.subheader("🚨 Termometro di Regime & Stress Sistemico")
     stress_val = last.get('Systemic_Stress', 50.0)
     
@@ -144,37 +146,39 @@ def render_page1():
         
     with col_info:
         if stress_val > 70:
-            st.error("🔴 **REGIME RISK-OFF / PANICO:** Stress sistemico elevato. Attivazione obbligatoria delle coperture (ETF Short / ETC). Vietato accumulare su asset rischiosi.")
+            st.error("🔴 **REGIME RISK-OFF / PANICO:** Stress sistemico elevato. Attivazione obbligatoria coperture. Vietato accumulare su asset rischiosi.")
         elif stress_val > 45:
-            st.warning("🟡 **REGIME DI TRANSIZIONE / STAGFLAZIONE:** Mercato incerto. Gestione attiva delle rotazioni, focus sui flussi di cassa (Covered Call) e attesa dei livelli POC.")
+            st.warning("🟡 **REGIME DI TRANSIZIONE / STAGFLAZIONE:** Mercato incerto. Gestione attiva delle rotazioni e attesa dei livelli POC.")
         else:
-            st.success("🟢 **REGIME RISK-ON / NORMALITÀ:** Liquidità favorevole. Spazio per l'accumulo chirurgico sui minimi (es. materie prime 'all'inferno').")
+            st.success("🟢 **REGIME RISK-ON / NORMALITÀ:** Liquidità favorevole. Spazio per accumulo chirurgico sui minimi.")
 
     st.markdown("---")
 
-    # 5. Metriche EOD Correnti
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     vix_val = last.get('VIX', np.nan)
     vix_z = last.get('VIX_Z252', np.nan)
-    col1.metric("VIX Spot", f"{vix_val:.2f}" if not pd.isna(vix_val) else "N/A", f"Z-Score (1Y): {vix_z:+.2f}" if not pd.isna(vix_z) else "N/A")
+    col1.metric("VIX Spot", f"{vix_val:.2f}" if not pd.isna(vix_val) else "N/A", f"Z-Score(1Y): {vix_z:+.2f}" if not pd.isna(vix_z) else "N/A")
 
     dix_val = last.get('DIX', np.nan)
     col2.metric("DIX (Dark Pool %)", f"{dix_val:.2f}%" if not pd.isna(dix_val) else "N/A")
 
     gex_val = last.get('GEX', np.nan)
-    col3.metric("GEX (Gamma Exposure)", f"{gex_val:,.0f}" if not pd.isna(gex_val) else "N/A")
+    col3.metric("GEX (Gamma Exp)", f"{gex_val:,.0f}" if not pd.isna(gex_val) else "N/A")
 
     pc_val = last.get('P_C', np.nan)
-    col4.metric("Total P/C Ratio", f"{pc_val:.2f}" if not pd.isna(pc_val) else "N/A")
+    col4.metric("Total P/C", f"{pc_val:.2f}" if not pd.isna(pc_val) else "N/A")
+
+    move_val = last.get('MOVE', np.nan)
+    col5.metric("MOVE Index", f"{move_val:.2f}" if not pd.isna(move_val) else "N/A")
 
     st.markdown("---")
 
-    # 6. Grafici a Serie Storica
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("📈 Trend VIX Spot (1 Anno)")
         if 'VIX' in df.columns and not df['VIX'].dropna().empty:
-            fig_vix = px.line(df.tail(252), x="Data", y="VIX", color_discrete_sequence=['#ef4444'], template='plotly_dark')
+            fig_vix = px.line(df.dropna(subset=['VIX']).tail(252), x="Data", y="VIX", color_discrete_sequence=['#ef4444'], template='plotly_dark')
+            fig_vix.update_traces(connectgaps=True)
             fig_vix.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_vix, use_container_width=True)
         else:
@@ -183,7 +187,8 @@ def render_page1():
     with c2:
         st.subheader("🌐 Trend Indice di Stress Sistemico")
         if 'Systemic_Stress' in df.columns and not df['Systemic_Stress'].dropna().empty:
-            fig_stress = px.line(df.tail(252), x="Data", y="Systemic_Stress", color_discrete_sequence=['#f59e0b'], template='plotly_dark')
+            fig_stress = px.line(df.dropna(subset=['Systemic_Stress']).tail(252), x="Data", y="Systemic_Stress", color_discrete_sequence=['#f59e0b'], template='plotly_dark')
+            fig_stress.update_traces(connectgaps=True)
             fig_stress.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_stress, use_container_width=True)
         else:
@@ -192,7 +197,6 @@ def render_page1():
     st.markdown("---")
     st.subheader("Tabella Master EOD & Serie Storiche Normalizzate")
     
-    # Render della tabella per verifica visiva (il DB non subisce cast a stringa)
     display_df = df.sort_values("Data", ascending=False).head(30).copy()
     display_df['Data'] = display_df['Data'].dt.strftime('%Y-%m-%d')
     st.dataframe(display_df, use_container_width=True, hide_index=True)
