@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 DB_FILE = "macro_database.csv"
 GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
 
-# Definizione rigida delle colonne attese per garantire l'integrità del DB
 COLUMNS = [
     "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
     "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", 
@@ -20,18 +19,15 @@ def load_db():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
         
-        # Igienizzazione Temporale Assoluta
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
         if df['Data'].dt.tz is not None:
             df['Data'] = df['Data'].dt.tz_localize(None)
         df['Data'] = df['Data'].dt.normalize()
         
-        # Iniezione colonne mancanti per retrocompatibilità
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = np.nan
                 
-        # Igienizzazione Algebrica
         num_cols = [c for c in COLUMNS if c != "Data"]
         for c in num_cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -44,11 +40,12 @@ def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
 def fetch_yahoo_data(days=365):
+    # Mappatura rigorosa di tutti i nodi della Term Structure
     tickers = {
-        "^VIX9D": "VIX9D", "^VIX": "VIX", "^VIX3M": "VIX3M", "^VIX6M": "VIX6M", 
-        "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", "DX-Y.NYB": "DXY", 
-        "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", "HYG": "HYG", 
-        "TLT": "TLT", "GLD": "GLD", "USO": "USO"
+        "^VIX1D": "VIX1D", "^VIX9D": "VIX9D", "^VIX": "VIX", "^VIX3M": "VIX3M", 
+        "^VIX6M": "VIX6M", "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", 
+        "DX-Y.NYB": "DXY", "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", 
+        "HYG": "HYG", "TLT": "TLT", "GLD": "GLD", "USO": "USO"
     }
     df_list = []
     
@@ -91,7 +88,6 @@ def fetch_bridge_data():
         df = pd.read_csv(io.StringIO(response.text))
         df.columns = df.columns.str.strip()
         
-        # Mappatura sicura delle colonne
         col_mapping = {'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity', 'M2': 'M2'}
         df = df.rename(columns=lambda x: col_mapping.get(x, x))
         
