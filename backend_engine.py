@@ -1,106 +1,84 @@
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import requests
 import io
+import yfinance as yf
 import os
 
-DB_FILE = "macro_data.csv"
-GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
+DB_FILE = "macro_database.csv"
 
-COLUMNS = [
-    "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
-    "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", "Net_Liquidity", "M2"
-]
-
-def load_db() -> pd.DataFrame:
+def load_db():
     if os.path.exists(DB_FILE):
-        try:
-            df = pd.read_csv(DB_FILE)
-            df['Data'] = pd.to_datetime(df['Data']).dt.normalize()
-            for col in COLUMNS:
-                if col not in df.columns: 
-                    df[col] = np.nan
-            return df.sort_values("Data")
-        except Exception:
-            pass
-    return pd.DataFrame(columns=COLUMNS)
+        df = pd.read_csv(DB_FILE)
+        df['Data'] = pd.to_datetime(df['Data'])
+        return df
+    return pd.DataFrame(columns=['Data'])
 
-def save_db(df: pd.DataFrame):
-    df = df.drop_duplicates(subset=['Data'], keep='last').sort_values("Data")
+def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
-def calculate_rolling_zscore(series: pd.Series, window: int = 252) -> pd.Series:
-    mean = series.rolling(window=window, min_periods=30).mean()
-    std = series.rolling(window=window, min_periods=30).std()
-    return (series - mean) / (std + 1e-9)
-
-def fetch_bridge_data() -> pd.DataFrame:
-    try:
-        response = requests.get(GOOGLE_BRIDGE_URL, timeout=10)
-        response.raise_for_status()
-        df_bridge = pd.read_csv(io.StringIO(response.text))
-        df_bridge.columns = df_bridge.columns.str.strip()
-        df_bridge = df_bridge.rename(columns={'Data': 'Data', 'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity', 'M2': 'M2'})
+def fetch_yahoo_data(days=365):
+    tickers = {"^VIX": "VIX", "DX-Y.NYB": "DXY"}
+    df_list = []
+    
+    for t, name in tickers.items():
+        try:
+            data = yf.download(t, period=f"{days}d", progress=False)
+            if not data.empty:
+                if isinstance(data.columns, pd.MultiIndex):
+                    temp = data['Close'].copy()
+                    temp.name = name
+                else:
+                    temp = data['Close'].rename(name)
+                df_list.append(temp)
+        except Exception as e:
+            print(f"Errore Yahoo Finance per {t}: {e}")
+            pass
+            
+    if df_list:
+        df = pd.concat(df_list, axis=1).reset_index()
+        df = df.rename(columns={'Date': 'Data'})
+        df['Data'] = pd.to_datetime(df['Data']).dt.tz_localize(None)
+        return df
         
-        if pd.api.types.is_numeric_dtype(df_bridge['Data']):
-            df_bridge['Data'] = pd.to_datetime(df_bridge['Data'], unit='D', origin='1899-12-30')
-        else:
-            df_bridge['Data'] = pd.to_datetime(df_bridge['Data'], errors='coerce')
-            
-        df_bridge['Data'] = df_bridge['Data'].dt.normalize()
-        for col in ['Net_Liquidity', 'M2']:
-            if col in df_bridge.columns: 
-                df_bridge[col] = pd.to_numeric(df_bridge[col], errors='coerce')
-                
-        return df_bridge.dropna(subset=['Data', 'Net_Liquidity'])
-    except Exception:
-        return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2"])
+    return pd.DataFrame(columns=['Data', 'VIX', 'DXY'])
 
-def fetch_yahoo_data(days: int = 365) -> pd.DataFrame:
-    tickers = {
-        "VIX9D": "^VIX9D", "VIX": "^VIX", "VIX3M": "^VIX3M", "VIX6M": "^VIX6M", 
-        "VIX1Y": "^VIX1Y", "VVIX": "^VVIX", "SKEW": "^SKEW", "DXY": "DX-Y.NYB", 
-        "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", "HYG": "HYG", 
-        "TLT": "TLT", "P_C": "^PCCR", "GLD": "GLD", "USO": "USO"
-    }
+def fetch_bridge_data():
+    # Placeholder per dati MOVE. Nessun dato fittizio. Restituisce frame vuoto.
+    return pd.DataFrame(columns=['Data', 'MOVE'])
+
+def fetch_squeezemetrics_data():
+    url = "https://squeezemetrics.com/monitor/static/DIX.csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        raw_data = yf.download(list(tickers.values()), period=f"{days}d", interval="1d", progress=False)
-        if raw_data.empty or 'Close' not in raw_data.columns:
-            return pd.DataFrame(columns=["Data"])
-            
-        data = raw_data['Close']
-        data = data.rename(columns={v: k for k, v in tickers.items()})
-        data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
-        df_y = data.reset_index().rename(columns={'Date': 'Data', 'index': 'Data'})
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text))
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
+        df = df.rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
+        df['DIX'] = df['DIX'] * 100
+        return df[['Data', 'DIX', 'GEX']].sort_values('Data')
+    except Exception as e:
+        print(f"Errore SqueezeMetrics: {e}")
+        return pd.DataFrame(columns=['Data', 'DIX', 'GEX'])
 
-        # --- CALCOLO FORZATO PROXY ECONOMETRICI ---
-        # 1. Proxy MOVE Index normalizzato
-        if 'TLT' in df_y.columns:
-            tlt_vol = df_y['TLT'].pct_change().rolling(window=21).std() * np.sqrt(252) * 100
-            df_y['MOVE'] = 85 + (tlt_vol * 3.5)
-
-        # 2. Proxy GEX basato sui flussi direzionali normalizzati di SPY
-        if 'SPY' in df_y.columns:
-            spy_ret = df_y['SPY'].pct_change()
-            df_y['GEX'] = (spy_ret * df_y['SPY'] * 500000).rolling(window=5).mean()
-
-        # 3. Proxy DIX (Dark Pool Index) basato sulla forza relativa institutional SPY/HYG
-        if 'SPY' in df_y.columns and 'HYG' in df_y.columns:
-            ratio = df_y['SPY'] / df_y['HYG']
-            df_y['DIX'] = 43 + (ratio - ratio.rolling(window=50).mean()) * 50
-            df_y['DIX'] = df_y['DIX'].clip(38, 58)
-
-        return df_y
-    except Exception:
-        return pd.DataFrame(columns=["Data"])
-
-def fetch_squeezemetrics() -> pd.DataFrame:
+def fetch_cboe_pc_ratio():
+    url = "https://cdn.cboe.com/data/us/options/market_statistics/historical_data/totalpc.csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        url = "https://squeezemetrics.com/monitor/static/DIX.csv"
-        df_d = pd.read_csv(url, timeout=10).tail(252).rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
-        df_d['Data'] = pd.to_datetime(df_d['Data']).dt.normalize()
-        df_d['DIX'] = df_d['DIX'] * 100
-        return df_d[['Data', 'DIX', 'GEX']]
-    except Exception:
-        return pd.DataFrame(columns=["Data", "DIX", "GEX"])
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text), skiprows=2)
+        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+        df = df.dropna(subset=['DATE'])
+        df = df.rename(columns={'DATE': 'Data', 'P/C Ratio': 'P_C'})
+        return df[['Data', 'P_C']].sort_values('Data')
+    except Exception as e:
+        print(f"Errore CBOE: {e}")
+        return pd.DataFrame(columns=['Data', 'P_C'])
+
+def calculate_rolling_zscore(series, window=252):
+    rolling_mean = series.rolling(window=window, min_periods=1).mean()
+    rolling_std = series.rolling(window=window, min_periods=1).std(ddof=0)
+    return np.where(rolling_std == 0, 0, (series - rolling_mean) / rolling_std)
