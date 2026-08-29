@@ -1,5 +1,5 @@
 import streamlit as st
-from page1 import render_page1
+from pages_modules.page1_macro import render_page1
 
 # 1. Configurazione Globale dell'Infrastruttura
 st.set_page_config(
@@ -9,14 +9,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Iniezione CSS Rigorosa (Design minimale, rimozione fronzoli Streamlit)
+# 2. Iniezione CSS Rigorosa (Design minimale)
 st.markdown("""
     <style>
         .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
         header { visibility: hidden; }
         footer { visibility: hidden; }
         #MainMenu { visibility: hidden; }
-        /* Ottimizzazione visiva per i container delle metriche */
         [data-testid="stMetricValue"] { font-size: 1.8rem; }
     </style>
 """, unsafe_allow_html=True)
