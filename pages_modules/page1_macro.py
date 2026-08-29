@@ -6,8 +6,19 @@ import plotly.graph_objects as go
 from datetime import datetime
 from backend_engine import (
     load_db, save_db, fetch_yahoo_data, fetch_bridge_data, 
-    fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS
+    fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
+    fetch_regime_baskets_data, calculate_regime_matrix,
+    fetch_macro_cycle_data, calculate_macro_cycle_phase
 )
+
+# Aggiunta funzioni di Caching per i nuovi moduli (Protezione API e Performance Vettoriale)
+@st.cache_data(ttl=3600)
+def get_cached_regime_data():
+    return fetch_regime_baskets_data(period="2y")
+
+@st.cache_data(ttl=3600)
+def get_cached_macro_data():
+    return fetch_macro_cycle_data()
 
 def render_page1():
     st.title("🛡️ Terminale Macro Professionale")
@@ -77,6 +88,10 @@ def render_page1():
 
                 final_df = final_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
                 save_db(final_df)
+                
+                # Pulisce la cache per forzare il refresh dei dati dei regimi
+                st.cache_data.clear()
+                
                 st.success("Sincronizzazione completata con successo.")
                 st.rerun()
 
@@ -140,6 +155,82 @@ def render_page1():
     v1d, vx = last.get('VIX1D', np.nan), last.get('VIX', np.nan)
     v_stat = "🔴 INVERTITA" if not pd.isna(v1d) and not pd.isna(vx) and v1d > vx else "🟢 CONTANGO"
     r2[5].metric("CURVA VIX", f"{v1d:.1f}/{vx:.1f}" if not pd.isna(v1d) and not pd.isna(vx) else "N/A", v_stat)
+
+    st.divider()
+
+    # ==========================================================
+    # MODULO INNESTATO A: MATRICE DEI 9 REGIMI MACRO
+    # ==========================================================
+    st.subheader("🗺️ Matrice dei Regimi di Mercato (I 9 Portafogli EOD)")
+    with st.spinner("Estrazione dati macro e calcolo momentum in corso..."):
+        df_regime_prices = get_cached_regime_data()
+        df_matrix, dominant_regime = calculate_regime_matrix(df_regime_prices)
+
+    if not df_matrix.empty:
+        st.markdown(f"**Regime Dominante (Momentum Aggregato Breve Termine):** `<span style='color:#00CC96; font-size:1.1em;'>{dominant_regime}</span>`", unsafe_allow_html=True)
+        
+        # Costruzione della Heatmap Istituzionale senza fronzoli
+        fig_hm = go.Figure(data=go.Heatmap(
+            z=df_matrix.values,
+            x=df_matrix.columns,
+            y=df_matrix.index,
+            colorscale='RdYlGn',
+            text=df_matrix.map(lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/D").values,
+            texttemplate="%{text}",
+            showscale=False
+        ))
+        fig_hm.update_layout(
+            template='plotly_dark', 
+            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis_title="Orizzonte Temporale",
+            yaxis_title="Regimi"
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+    else:
+        st.warning("⚠️ Dati insufficienti per il calcolo della Matrice dei Regimi.")
+
+    st.divider()
+
+    # ==========================================================
+    # MODULO INNESTATO B: QUADRANTI DEL CICLO ECONOMICO
+    # ==========================================================
+    st.subheader("🧭 Posizionamento nel Ciclo Economico")
+    with st.spinner("Estrazione dati Federal Reserve e calcolo incroci macro..."):
+        df_macro = get_cached_macro_data()
+        fase_attuale, macro_metrics = calculate_macro_cycle_phase(df_macro)
+
+    if fase_attuale != "DATI INSUFFICIENTI":
+        # Rendering della UI a 4 quadranti accesi/spenti logicamente
+        quad_cols = st.columns(4)
+        fasi_ciclo = ["RIPRESA", "ESPANSIONE", "PICCO / STAGFLAZIONE", "CONTRAZIONE"]
+
+        for i, fase in enumerate(fasi_ciclo):
+            with quad_cols[i]:
+                bg_color = "#00CC96" if fase == fase_attuale else "transparent"
+                border_color = "#00CC96" if fase == fase_attuale else "#334155"
+                text_color = "#ffffff" if fase == fase_attuale else "#64748b"
+                
+                st.markdown(
+                    f"""
+                    <div style="background-color: {bg_color}; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid {border_color};">
+                        <h4 style="color: {text_color}; margin: 0; font-size: 16px;">{fase}</h4>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Metriche oggettive che hanno generato lo scoring
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f}%")
+        mc2.metric("Rame/Oro Trend", macro_metrics.get('Copper_Gold_Trend', 'N/D'))
+        mc3.metric("Tassi Reali (Z-Score)", f"{macro_metrics.get('Real_Rates_Z', 0):.2f}")
+        
+        debasement_status = "⚠️ ATTIVO" if macro_metrics.get('Debasement_Risk') else "🟢 INATTIVO"
+        mc4.metric("Rischio Debasement 30Y", debasement_status)
+    else:
+        st.warning("⚠️ Dati FRED o Commodities insufficienti per inquadrare il ciclo economico.")
 
     st.divider()
 
