@@ -8,10 +8,10 @@ from backend_engine import (
     load_db, save_db, fetch_yahoo_data, fetch_bridge_data, 
     fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
     fetch_regime_baskets_data, calculate_regime_matrix,
-    fetch_macro_cycle_data, calculate_macro_cycle_phase
+    fetch_macro_cycle_data, calculate_macro_cycle_phase,
+    calculate_risk_propensity
 )
 
-# Aggiunta funzioni di Caching per i nuovi moduli (Protezione API e Performance Vettoriale)
 @st.cache_data(ttl=3600)
 def get_cached_regime_data():
     return fetch_regime_baskets_data(period="2y")
@@ -89,9 +89,7 @@ def render_page1():
                 final_df = final_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
                 save_db(final_df)
                 
-                # Pulisce la cache per forzare il refresh dei dati dei regimi
                 st.cache_data.clear()
-                
                 st.success("Sincronizzazione completata con successo.")
                 st.rerun()
 
@@ -159,17 +157,69 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # MODULO INNESTATO A: MATRICE DEI 9 REGIMI MACRO
+    # PANORAMICA MACRO E MERCATI (STILE QUANTASTE)
     # ==========================================================
-    st.subheader("🗺️ Matrice dei Regimi di Mercato (I 9 Portafogli EOD)")
-    with st.spinner("Estrazione dati macro e calcolo momentum in corso..."):
+    with st.spinner("Estrazione dati macro e calcolo probabilità statistiche..."):
         df_regime_prices = get_cached_regime_data()
-        df_matrix, dominant_regime = calculate_regime_matrix(df_regime_prices)
+        df_matrix, dominant_regime, conf_pct = calculate_regime_matrix(df_regime_prices)
+        risk_metrics, risk_err = calculate_risk_propensity(df)
+
+    col_q1, col_q2 = st.columns(2)
+    
+    with col_q1:
+        st.markdown(f"""
+        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Regime Economico Predominante</h4>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+                <div>
+                    <span style="color:#64748b; font-size:12px;">REGIME DOMINANTE</span><br>
+                    <span style="color:#f8fafc; font-size:24px; font-weight:bold;">{dominant_regime}</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:#f59e0b; font-size:32px; font-weight:bold;">{conf_pct}%</span>
+                </div>
+            </div>
+            <div style="margin-top:15px; height:8px; width:100%; background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%); border-radius:4px;"></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_q2:
+        if risk_err:
+            r_status, r_on, r_off = "N/D", 0, 0
+        else:
+            r_status = risk_metrics['Status']
+            r_on = risk_metrics['Risk_On_Pct']
+            r_off = risk_metrics['Risk_Off_Pct']
+            
+        r_color = "#10b981" if r_status == "RISK ON" else ("#ef4444" if r_status == "RISK OFF" else "#f59e0b")
+        
+        st.markdown(f"""
+        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Propensione al Rischio</h4>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+                <div>
+                    <span style="color:#64748b; font-size:12px;">RISK ON / RISK OFF</span><br>
+                    <span style="color:{r_color}; font-size:24px; font-weight:bold;">{r_status}</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:#f59e0b; font-size:32px; font-weight:bold;">{r_on}%</span>
+                </div>
+            </div>
+            <div style="margin-top:15px; display:flex; border-radius:4px; overflow:hidden; height:8px;">
+                <div style="width:{r_off}%; background-color:#ef4444;"></div>
+                <div style="width:{r_on}%; background-color:#10b981;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ==========================================================
+    # MODULO A: MATRICE DEI 9 REGIMI MACRO
+    # ==========================================================
+    st.subheader("🗺️ Matrice dei Regimi di Mercato (Heatmap Z-Score)")
 
     if not df_matrix.empty:
-        st.markdown(f"**Regime Dominante (Momentum Aggregato Breve Termine):** `<span style='color:#00CC96; font-size:1.1em;'>{dominant_regime}</span>`", unsafe_allow_html=True)
-        
-        # Costruzione della Heatmap Istituzionale senza fronzoli
         fig_hm = go.Figure(data=go.Heatmap(
             z=df_matrix.values,
             x=df_matrix.columns,
@@ -192,7 +242,7 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # MODULO INNESTATO B: QUADRANTI DEL CICLO ECONOMICO
+    # MODULO B: QUADRANTI DEL CICLO ECONOMICO
     # ==========================================================
     st.subheader("🧭 Posizionamento nel Ciclo Economico")
     with st.spinner("Estrazione dati Federal Reserve e calcolo incroci macro..."):
@@ -200,7 +250,6 @@ def render_page1():
         fase_attuale, macro_metrics = calculate_macro_cycle_phase(df_macro)
 
     if fase_attuale != "DATI INSUFFICIENTI":
-        # Rendering della UI a 4 quadranti accesi/spenti logicamente
         quad_cols = st.columns(4)
         fasi_ciclo = ["RIPRESA", "ESPANSIONE", "PICCO / STAGFLAZIONE", "CONTRAZIONE"]
 
@@ -221,7 +270,6 @@ def render_page1():
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Metriche oggettive che hanno generato lo scoring
         mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f}%")
         mc2.metric("Rame/Oro Trend", macro_metrics.get('Copper_Gold_Trend', 'N/D'))
