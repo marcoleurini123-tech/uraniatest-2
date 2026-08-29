@@ -28,12 +28,12 @@ REGIME_BASKETS = {
     "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"],
     "DOLLAR WEAKNESS/GLOBAL REBALANCING + BITCOIN": ["EEM", "FXF", "GLD", "IXUS", "IBIT"],
     "DEBASEMENT AGGRESSIVO": ["GLD", "XME", "COPX", "EEM", "IBIT"],
-    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VGSH"], # Proxy liquidità USD a breve termine
+    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VGSH"],
 }
 
 TIMEFRAMES = {"Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63}
 
-# --- FUNZIONI DI BASE ---
+# --- FUNZIONI DI BASE E FETCHING DATI ---
 def load_db():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
@@ -97,7 +97,6 @@ def fetch_yahoo_data(days=365):
                 df = data.copy()
 
         df = df.rename(columns=tickers_map)
-        
         df = df.reset_index()
         col_date = [c for c in df.columns if str(c).lower() == 'date']
         if col_date:
@@ -139,6 +138,35 @@ def fetch_bridge_data():
     except Exception:
         return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2", "MOVE"])
 
+def fetch_squeezemetrics_data():
+    url = "https://squeezemetrics.com/monitor/static/DIX.csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text))
+        df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.normalize()
+        df = df.dropna(subset=['date'])
+        df = df.rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
+        df['DIX'] = df['DIX'] * 100
+        return df[['Data', 'DIX', 'GEX']].sort_values('Data')
+    except Exception:
+        return pd.DataFrame(columns=['Data', 'DIX', 'GEX'])
+
+def fetch_cboe_pc_ratio():
+    url = "https://cdn.cboe.com/data/us/options/market_statistics/historical_data/totalpc.csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text), skiprows=2)
+        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce').dt.normalize()
+        df = df.dropna(subset=['DATE'])
+        df = df.rename(columns={'DATE': 'Data', 'P/C Ratio': 'P_C'})
+        return df[['Data', 'P_C']].sort_values('Data')
+    except Exception:
+        return pd.DataFrame(columns=['Data', 'P_C'])
+
 def calculate_rolling_zscore(series, window=252):
     rolling_mean = series.rolling(window=window, min_periods=1).mean()
     rolling_std = series.rolling(window=window, min_periods=1).std(ddof=0)
@@ -150,10 +178,6 @@ def calculate_rolling_zscore(series, window=252):
 # ==========================================================
 
 def fetch_regime_baskets_data(period="2y"):
-    """
-    Estrae le chiusure Adjusted EOD per tutti gli asset dei panieri macro.
-    Gestisce l'assenza di dati restituendo DataFrame vuoto.
-    """
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=True, progress=False)
@@ -175,10 +199,6 @@ def fetch_regime_baskets_data(period="2y"):
         return pd.DataFrame()
 
 def calculate_regime_matrix(df_prices):
-    """
-    Calcola la media equipesata (Rate of Change) per ogni basket.
-    Il regime dominante è quello con il momentum più alto combinando 1W e 1M.
-    """
     if df_prices.empty or len(df_prices) < 63:
         return pd.DataFrame(), "Dati Insufficienti"
 
@@ -219,17 +239,12 @@ def calculate_regime_matrix(df_prices):
 # ==========================================================
 
 def fetch_macro_cycle_data():
-    """
-    Estrae rigorosamente indicatori macro reali. FRED per YC e CPI. YF per Commodities.
-    Ritorna un dataframe unificato normalizzato.
-    """
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * 4) # 4 anni di storico per Z-Score a 156 settimane
+    start_date = end_date - timedelta(days=365 * 4) 
     
     df_macro = pd.DataFrame()
     
     try:
-        # 1. Dati FRED (Rendimenti e Inflazione)
         fred_series = {
             'DGS10': '10Y_Yield',
             'DGS2': '2Y_Yield',
@@ -239,19 +254,15 @@ def fetch_macro_cycle_data():
         df_fred = web.DataReader(list(fred_series.keys()), 'fred', start_date, end_date)
         df_fred = df_fred.rename(columns=fred_series)
         
-        # L'inflazione è mensile, forward-fill giornaliero per allinearla ai rendimenti
         df_fred['CPI_Index'] = df_fred['CPI_Index'].ffill()
-        # Calcolo CPI YoY % (shift 252 giorni lavorativi circa = 1 anno)
         df_fred['CPI_YoY'] = df_fred['CPI_Index'].pct_change(periods=252) * 100
         
-        # 2. Dati Yahoo Finance (Rame e Oro)
         yf_data = yf.download(["HG=F", "GC=F"], start=start_date, end=end_date, progress=False)
         if isinstance(yf_data.columns, pd.MultiIndex):
             df_yf = yf_data['Close'].rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold'})
         else:
             df_yf = yf_data.rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold'})
             
-        # 3. Unione e Pulizia
         df_macro = pd.merge(df_fred, df_yf, left_index=True, right_index=True, how='inner')
         df_macro = df_macro.dropna(subset=['10Y_Yield', '2Y_Yield', 'Copper', 'Gold']).sort_index()
         return df_macro
@@ -261,37 +272,27 @@ def fetch_macro_cycle_data():
         return pd.DataFrame()
 
 def calculate_macro_cycle_phase(df_macro):
-    """
-    Applica lo scoring algoritmico basato su matematica oggettiva,
-    senza discrezionalità, per definire in quale dei 4 quadranti ci troviamo.
-    """
     if df_macro.empty or len(df_macro) < 252:
         return "DATI INSUFFICIENTI", {}
         
     df = df_macro.copy()
     
-    # Calcolo Metriche
     df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
     df['Copper_Gold_Ratio'] = df['Copper'] / df['Gold']
     df['Real_Rates'] = df['10Y_Yield'] - df['CPI_YoY'].fillna(0)
     
-    # 1. Valutazione Curva dei Rendimenti
     current_spread = df['Spread_10Y_2Y'].iloc[-1]
     is_inverted = current_spread < 0
     
-    # 2. Valutazione Trend Rapporto Rame/Oro (Rialzista se prezzo attuale > Media Mobile a 200 gg)
     df['C_G_SMA200'] = df['Copper_Gold_Ratio'].rolling(window=200).mean()
     is_copper_gold_bullish = df['Copper_Gold_Ratio'].iloc[-1] > df['C_G_SMA200'].iloc[-1]
     
-    # 3. Valutazione Breakout Tassi Reali (Z-Score a 1 anno)
     df['Real_Rates_Z252'] = calculate_rolling_zscore(df['Real_Rates'], window=252)
     is_real_rates_breakout = df['Real_Rates_Z252'].iloc[-1] > 1.5 
     
-    # 4. Pressione Debito Lunga Scadenza (Z-Score a 156 settimane = ~756 giorni lavorativi)
     df['30Y_Z756'] = calculate_rolling_zscore(df['30Y_Yield'], window=756)
     is_debasement_risk = df['30Y_Z756'].iloc[-1] > 1.5
     
-    # Matrice di Scoring Booleana
     if is_inverted and not is_copper_gold_bullish:
         fase = "CONTRAZIONE"
     elif is_inverted or is_real_rates_breakout:
