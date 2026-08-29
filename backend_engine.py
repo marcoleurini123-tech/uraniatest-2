@@ -1,313 +1,354 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-import requests
-import io
-import yfinance as yf
-import os
-from datetime import datetime, timedelta
-import pandas_datareader.data as web
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+from backend_engine import (
+    load_db, save_db, fetch_yahoo_data, fetch_bridge_data, 
+    fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
+    fetch_regime_baskets_data, calculate_regime_matrix,
+    fetch_macro_cycle_data, calculate_macro_cycle_phase,
+    calculate_risk_propensity
+)
 
-DB_FILE = "macro_database.csv"
-GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
+@st.cache_data(ttl=3600)
+def get_cached_regime_data():
+    return fetch_regime_baskets_data(period="2y")
 
-# Definizione rigida delle matrici ammesse nel Database
-COLUMNS = [
-    "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
-    "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", 
-    "Net_Liquidity", "M2"
-]
+@st.cache_data(ttl=3600)
+def get_cached_macro_data():
+    return fetch_macro_cycle_data()
 
-# --- COSTANTI MODULO A (REGIMI MACRO) ---
-REGIME_BASKETS = {
-    "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
-    "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
-    "STAGFLATION": ["GLD", "DBC", "XLE", "TIP"],
-    "REFLATION": ["XLI", "XLF", "IWM", "EEM", "DBC"],
-    "DISINFLATION/SOFT LANDING": ["TLT", "LQD", "QQQ", "VTI", "GLD"],
-    "DOLLAR WEAKNESS/GLOBAL REBALANCING": ["EEM", "FXF", "GLD", "IXUS", "DBC"],
-    "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"],
-    "DOLLAR WEAKNESS/GLOBAL REBALANCING + BITCOIN": ["EEM", "FXF", "GLD", "IXUS", "IBIT"],
-    "DEBASEMENT AGGRESSIVO": ["GLD", "XME", "COPX", "EEM", "IBIT"],
-    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VGSH"],
-}
-
-TIMEFRAMES = {"Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63}
-
-# --- FUNZIONI DI BASE E FETCHING DATI ---
-def load_db():
-    if os.path.exists(DB_FILE):
-        df = pd.read_csv(DB_FILE)
-        
-        # Normalizzazione Temporale Assoluta
-        df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
-        if df['Data'].dt.tz is not None:
-            df['Data'] = df['Data'].dt.tz_localize(None)
-        df['Data'] = df['Data'].dt.normalize()
-        
-        # Allineamento Matrice (Previene fallimenti su CSV legacy)
-        for col in COLUMNS:
-            if col not in df.columns:
-                df[col] = np.nan
-                
-        # Igienizzazione Algebrica
-        num_cols = [c for c in COLUMNS if c != "Data"]
-        for c in num_cols:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-                
-        return df.dropna(subset=['Data']).sort_values("Data")
-    return pd.DataFrame(columns=COLUMNS)
-
-def save_db(df):
-    df = df.drop_duplicates(subset=['Data'], keep='last').sort_values("Data")
-    df.to_csv(DB_FILE, index=False)
-
-def fetch_yahoo_data(days=365):
-    tickers_map = {
-        "^VIX1D": "VIX1D", "^VIX9D": "VIX9D", "^VIX": "VIX", "^VIX3M": "VIX3M", 
-        "^VIX6M": "VIX6M", "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", 
-        "DX-Y.NYB": "DXY", "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", 
-        "HYG": "HYG", "TLT": "TLT", "GLD": "GLD", "USO": "USO"
-    }
+def render_page1():
+    st.title("🛡️ Terminale Macro Professionale")
+    st.caption("Motore Vettoriale Blindato • Analisi Divergenze Istituzionali")
     
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+    df = load_db()
+
+    with st.sidebar:
+        st.header("⚙️ Override Dati EOD")
+        st.caption("I dati immessi manualmente non verranno sovrascritti dal fetch API.")
+        
+        with st.form("manual_entry"):
+            m_date = st.date_input("Data Riferimento", datetime.now())
+            m_v1 = st.number_input("VIX 1D", 0.0, format="%.2f")
+            m_move = st.number_input("MOVE Index", 0.0, format="%.2f")
+            m_pc = st.number_input("Put/Call Ratio", 0.0, format="%.2f")
+            m_dix = st.number_input("DIX (%)", 0.0, format="%.1f")
+            m_gex = st.number_input("GEX (Assoluto)", 0.0, format="%.0f")
+            
+            if st.form_submit_button("1. BLINDA DATI NEL DB"):
+                dt = pd.to_datetime(m_date).normalize()
+                
+                if not df.empty and dt in df['Data'].values:
+                    idx = df.index[df['Data'] == dt].tolist()[0]
+                else:
+                    new_row = {c: np.nan for c in COLUMNS}
+                    new_row["Data"] = dt
+                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                    idx = df.index[-1]
+                
+                if m_v1 > 0: df.at[idx, 'VIX1D'] = m_v1
+                if m_move > 0: df.at[idx, 'MOVE'] = m_move
+                if m_pc > 0: df.at[idx, 'P_C'] = m_pc
+                if m_dix > 0: df.at[idx, 'DIX'] = m_dix
+                if m_gex != 0: df.at[idx, 'GEX'] = m_gex
+                
+                save_db(df)
+                st.success(f"Sessione {dt.strftime('%Y-%m-%d')} registrata.")
+                st.rerun()
+
+        st.divider()
+        st.header("🔄 Fetch Istituzionale")
+        
+        if st.button("2. SINCRONIZZA FLUSSI API", use_container_width=True):
+            with st.spinner("Allineamento matrici temporali in corso..."):
+                d_y = fetch_yahoo_data(365)
+                d_b = fetch_bridge_data()
+                d_sq = fetch_squeezemetrics_data()
+                d_pc = fetch_cboe_pc_ratio()
+                
+                fetched_df = pd.merge(d_y, d_b, on='Data', how='outer')
+                if not d_sq.empty:
+                    fetched_df = pd.merge(fetched_df, d_sq, on='Data', how='outer')
+                if not d_pc.empty:
+                    fetched_df = pd.merge(fetched_df, d_pc, on='Data', how='outer')
+
+                if not df.empty:
+                    fetched_df = fetched_df.set_index('Data')
+                    local_df = df.set_index('Data')
+                    final_df = local_df.combine_first(fetched_df).reset_index()
+                else:
+                    final_df = fetched_df
+
+                for col in COLUMNS:
+                    if col not in final_df.columns: final_df[col] = np.nan
+                final_df = final_df[COLUMNS]
+
+                final_df = final_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
+                save_db(final_df)
+                
+                st.cache_data.clear()
+                st.success("Sincronizzazione completata con successo.")
+                st.rerun()
+
+    if df.empty:
+        st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione API.")
+        return
+
+    df = df.sort_values("Data").reset_index(drop=True)
+    num_cols = [c for c in COLUMNS if c != "Data" and c in df.columns]
+    df[num_cols] = df[num_cols].ffill(limit=7)
+
+    df['Liq_Delta_5D'] = df['Net_Liquidity'].pct_change(periods=5) * 100
+    df['Ratio_GO'] = np.where(df['USO'] > 0, df['GLD'] / df['USO'], np.nan)
+    df['Ratio_Risk'] = np.where(df['XLP'] > 0, df['XLY'] / df['XLP'], np.nan)
+    df['Ratio_Br'] = np.where(df['RSP'] > 0, df['SPY'] / df['RSP'], np.nan)
+
+    last = df.iloc[-1]
+
+    if len(df) >= 5 and last.get('Liq_Delta_5D', 0) < 0 and last.get('SPY', 0) > df.iloc[-5].get('SPY', 0):
+        st.error(f"🚨 ALERT DIVERGENZA: Liquidità in calo ({last['Liq_Delta_5D']:.2f}%) mentre lo SPY sale. Pericolo di storno sistemico.")
+
+    st.subheader("🚦 Monitor Segnali di Regime")
+    r1, r2 = st.columns(6), st.columns(6)
     
-    try:
-        data = yf.download(
-            tickers=list(tickers_map.keys()), 
-            start=start_date.strftime('%Y-%m-%d'), 
-            end=end_date.strftime('%Y-%m-%d'), 
-            progress=False
+    dix_v = last.get('DIX', np.nan)
+    r1[0].metric("DIX", f"{dix_v:.1f}%" if not pd.isna(dix_v) else "N/A", "🟢 BULLISH" if dix_v > 45 else "⚪ NEUTRO")
+    
+    gex_v = last.get('GEX', np.nan)
+    r1[1].metric("GEX", f"{gex_v:,.0f}" if not pd.isna(gex_v) else "N/A", "🔴 SQUEEZE" if gex_v < 0 else "🟢 STABILE", delta_color="inverse")
+    
+    pc_v = last.get('P_C', np.nan)
+    pc_status = "🟢 PANICO" if pc_v > 1.05 else ("🔴 AVIDITÀ" if 0 < pc_v < 0.7 else "⚪ NEUTRO")
+    r1[2].metric("P/C RATIO", f"{pc_v:.2f}" if not pd.isna(pc_v) else "N/A", pc_status)
+    
+    skew_v = last.get('SKEW', np.nan)
+    r1[3].metric("SKEW", f"{skew_v:.1f}" if not pd.isna(skew_v) else "N/A", "⚠️ BLACK SWAN" if skew_v > 145 else "🟢 OK", delta_color="inverse")
+    
+    move_v = last.get('MOVE', np.nan)
+    r1[4].metric("MOVE", f"{move_v:.1f}" if not pd.isna(move_v) else "N/A", "🔴 STRESS BOND" if move_v > 115 else "🟢 CALMO", delta_color="inverse")
+    
+    liq_d = last.get('Liq_Delta_5D', np.nan)
+    liq_col = "normal" if not pd.isna(liq_d) and liq_d >= 0 else "inverse"
+    r1[5].metric("Δ LIQ. 5D", f"{liq_d:.2f}%" if not pd.isna(liq_d) else "N/A", "📉 CONTRAZIONE" if not pd.isna(liq_d) and liq_d < 0 else "📈 ESPANSIONE", delta_color=liq_col)
+
+    dxy_v = last.get('DXY', np.nan)
+    r2[0].metric("DXY", f"{dxy_v:.2f}" if not pd.isna(dxy_v) else "N/A", "🔴 USD UP" if dxy_v > 103.5 else "🟢 USD DOWN", delta_color="inverse")
+    
+    rgo_v = last.get('Ratio_GO', np.nan)
+    r2[1].metric("GOLD/OIL", f"{rgo_v:.2f}" if not pd.isna(rgo_v) else "N/A", "⚠️ ALERT" if rgo_v > 2.5 else "🟢 OK")
+    
+    tlt_v = last.get('TLT', np.nan)
+    tlt_status = "📈 TASSI DOWN" if len(df) > 1 and tlt_v > df.iloc[-2].get('TLT', 0) else "📉 TASSI UP"
+    r2[2].metric("TLT PRICE", f"${tlt_v:.2f}" if not pd.isna(tlt_v) else "N/A", tlt_status)
+    
+    rrisk_v = last.get('Ratio_Risk', np.nan)
+    r2[3].metric("XLY/XLP", f"{rrisk_v:.2f}" if not pd.isna(rrisk_v) else "N/A", "🟢 RISK-ON" if rrisk_v > 1.45 else "🔴 DIFESA")
+    
+    rbr_v = last.get('Ratio_Br', np.nan)
+    r2[4].metric("SPY/RSP", f"{rbr_v:.2f}" if not pd.isna(rbr_v) else "N/A", "⚠️ ALERT" if rbr_v > 3.5 else "🟢 SANA")
+    
+    v1d, vx = last.get('VIX1D', np.nan), last.get('VIX', np.nan)
+    v_stat = "🔴 INVERTITA" if not pd.isna(v1d) and not pd.isna(vx) and v1d > vx else "🟢 CONTANGO"
+    r2[5].metric("CURVA VIX", f"{v1d:.1f}/{vx:.1f}" if not pd.isna(v1d) and not pd.isna(vx) else "N/A", v_stat)
+
+    st.divider()
+
+    # ==========================================================
+    # PANORAMICA MACRO E MERCATI (STILE QUANTASTE)
+    # ==========================================================
+    with st.spinner("Estrazione dati macro e calcolo probabilità statistiche..."):
+        df_regime_prices = get_cached_regime_data()
+        df_matrix, dominant_regime, conf_pct = calculate_regime_matrix(df_regime_prices)
+        risk_metrics, risk_err = calculate_risk_propensity(df)
+
+    col_q1, col_q2 = st.columns(2)
+    
+    with col_q1:
+        st.markdown(f"""
+        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Regime Economico Predominante</h4>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+                <div>
+                    <span style="color:#64748b; font-size:12px;">REGIME DOMINANTE</span><br>
+                    <span style="color:#f8fafc; font-size:24px; font-weight:bold;">{dominant_regime}</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:#f59e0b; font-size:32px; font-weight:bold;">{conf_pct}%</span>
+                </div>
+            </div>
+            <div style="margin-top:15px; height:8px; width:100%; background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%); border-radius:4px;"></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_q2:
+        if risk_err:
+            r_status, r_on, r_off = "N/D", 0, 0
+        else:
+            r_status = risk_metrics['Status']
+            r_on = risk_metrics['Risk_On_Pct']
+            r_off = risk_metrics['Risk_Off_Pct']
+            
+        r_color = "#10b981" if r_status == "RISK ON" else ("#ef4444" if r_status == "RISK OFF" else "#f59e0b")
+        
+        st.markdown(f"""
+        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Propensione al Rischio</h4>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+                <div>
+                    <span style="color:#64748b; font-size:12px;">RISK ON / RISK OFF</span><br>
+                    <span style="color:{r_color}; font-size:24px; font-weight:bold;">{r_status}</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:#f59e0b; font-size:32px; font-weight:bold;">{r_on}%</span>
+                </div>
+            </div>
+            <div style="margin-top:15px; display:flex; border-radius:4px; overflow:hidden; height:8px;">
+                <div style="width:{r_off}%; background-color:#ef4444;"></div>
+                <div style="width:{r_on}%; background-color:#10b981;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ==========================================================
+    # MODULO A: MATRICE DEI 9 REGIMI MACRO
+    # ==========================================================
+    st.subheader("🗺️ Matrice dei Regimi di Mercato (Heatmap Z-Score)")
+
+    if not df_matrix.empty:
+        fig_hm = go.Figure(data=go.Heatmap(
+            z=df_matrix.values,
+            x=df_matrix.columns,
+            y=df_matrix.index,
+            colorscale='RdYlGn',
+            text=df_matrix.map(lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/D").values,
+            texttemplate="%{text}",
+            showscale=False
+        ))
+        fig_hm.update_layout(
+            template='plotly_dark', 
+            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis_title="Orizzonte Temporale",
+            yaxis_title="Regimi"
         )
-        
-        if data.empty:
-            return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
-
-        if isinstance(data.columns, pd.MultiIndex):
-            if 'Close' in data.columns.get_level_values(0):
-                df = data['Close'].copy()
-            elif 'Close' in data.columns.get_level_values(1):
-                df = data.xs('Close', level=1, axis=1)
-            else:
-                return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
-        else:
-            if 'Close' in data.columns:
-                df = pd.DataFrame(data['Close'])
-            else:
-                df = data.copy()
-
-        df = df.rename(columns=tickers_map)
-        df = df.reset_index()
-        col_date = [c for c in df.columns if str(c).lower() == 'date']
-        if col_date:
-            df = df.rename(columns={col_date[0]: 'Data'})
-            df['Data'] = pd.to_datetime(df['Data']).dt.tz_localize(None).dt.normalize()
-            
-        cols_to_keep = ['Data'] + [c for c in df.columns if c in tickers_map.values()]
-        return df[cols_to_keep]
-        
-    except Exception as e:
-        print(f"Errore Critico YF Fetch: {e}")
-        return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
-
-def fetch_bridge_data():
-    try:
-        response = requests.get(GOOGLE_BRIDGE_URL, timeout=10)
-        response.raise_for_status()
-        df = pd.read_csv(io.StringIO(response.text))
-        df.columns = df.columns.str.strip()
-        
-        col_mapping = {'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity', 'M2': 'M2'}
-        df = df.rename(columns=lambda x: col_mapping.get(x, x))
-        
-        if 'Data' not in df.columns:
-            return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2", "MOVE"])
-
-        if pd.api.types.is_numeric_dtype(df['Data']):
-            df['Data'] = pd.to_datetime(df['Data'], unit='D', origin='1899-12-30')
-        else:
-            df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
-            
-        df['Data'] = df['Data'].dt.normalize()
-        
-        for col in ['Net_Liquidity', 'M2', 'MOVE']:
-            if col in df.columns: 
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-        return df.dropna(subset=['Data'])
-    except Exception:
-        return pd.DataFrame(columns=["Data", "Net_Liquidity", "M2", "MOVE"])
-
-def fetch_squeezemetrics_data():
-    url = "https://squeezemetrics.com/monitor/static/DIX.csv"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        df = pd.read_csv(io.StringIO(response.text))
-        df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.normalize()
-        df = df.dropna(subset=['date'])
-        df = df.rename(columns={'date': 'Data', 'dix': 'DIX', 'gex': 'GEX'})
-        df['DIX'] = df['DIX'] * 100
-        return df[['Data', 'DIX', 'GEX']].sort_values('Data')
-    except Exception:
-        return pd.DataFrame(columns=['Data', 'DIX', 'GEX'])
-
-def fetch_cboe_pc_ratio():
-    url = "https://cdn.cboe.com/data/us/options/market_statistics/historical_data/totalpc.csv"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        df = pd.read_csv(io.StringIO(response.text), skiprows=2)
-        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce').dt.normalize()
-        df = df.dropna(subset=['DATE'])
-        df = df.rename(columns={'DATE': 'Data', 'P/C Ratio': 'P_C'})
-        return df[['Data', 'P_C']].sort_values('Data')
-    except Exception:
-        return pd.DataFrame(columns=['Data', 'P_C'])
-
-def calculate_rolling_zscore(series, window=252):
-    rolling_mean = series.rolling(window=window, min_periods=1).mean()
-    rolling_std = series.rolling(window=window, min_periods=1).std(ddof=0)
-    return np.where(rolling_std == 0, 0, (series - rolling_mean) / rolling_std)
-
-
-# ==========================================================
-# MODULO A: IDENTIFICATORE DI REGIME (I 9 PORTAFOGLI)
-# ==========================================================
-
-def fetch_regime_baskets_data(period="2y"):
-    try:
-        unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=True, progress=False)
-        
-        if data.empty:
-            return pd.DataFrame()
-            
-        if isinstance(data.columns, pd.MultiIndex):
-            if "Close" in data.columns.levels[0]:
-                df = data["Close"].copy()
-            else:
-                df = data.xs(data.columns.levels[0][0], axis=1, level=0).copy()
-        else:
-            df = data.copy()
-            
-        return df.dropna(how="all").sort_index()
-    except Exception as e:
-        print(f"Errore Modulo A Data Fetching: {e}")
-        return pd.DataFrame()
-
-def calculate_regime_matrix(df_prices):
-    if df_prices.empty or len(df_prices) < 63:
-        return pd.DataFrame(), "Dati Insufficienti"
-
-    matrix = []
-    
-    for regime, tickers in REGIME_BASKETS.items():
-        valid_tickers = [t for t in tickers if t in df_prices.columns]
-        if not valid_tickers:
-            continue
-            
-        basket_prices = df_prices[valid_tickers].ffill()
-        row_data = {"Regime": regime}
-        
-        for tf_label, days in TIMEFRAMES.items():
-            if len(basket_prices) > days:
-                p_now = basket_prices.iloc[-1]
-                p_past = basket_prices.iloc[-(days + 1)]
-                roc = ((p_now - p_past) / p_past) * 100.0
-                row_data[tf_label] = float(np.nanmean(roc))
-            else:
-                row_data[tf_label] = np.nan
-                
-        matrix.append(row_data)
-
-    df_matrix = pd.DataFrame(matrix).set_index("Regime")
-    
-    if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
-        momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
-        dominant = momentum_score.idxmax() if not momentum_score.dropna().empty else "N/D"
+        st.plotly_chart(fig_hm, use_container_width=True)
     else:
-        dominant = "N/D"
+        st.warning("⚠️ Dati insufficienti per il calcolo della Matrice dei Regimi.")
+
+    st.divider()
+
+    # ==========================================================
+    # MODULO B: QUADRANTI DEL CICLO ECONOMICO
+    # ==========================================================
+    st.subheader("🧭 Posizionamento nel Ciclo Economico")
+    with st.spinner("Estrazione dati Federal Reserve e calcolo incroci macro..."):
+        df_macro = get_cached_macro_data()
+        fase_attuale, macro_metrics = calculate_macro_cycle_phase(df_macro)
+
+    if fase_attuale != "DATI INSUFFICIENTI":
+        quad_cols = st.columns(4)
+        fasi_ciclo = ["RIPRESA", "ESPANSIONE", "PICCO / STAGFLAZIONE", "CONTRAZIONE"]
+
+        for i, fase in enumerate(fasi_ciclo):
+            with quad_cols[i]:
+                bg_color = "#00CC96" if fase == fase_attuale else "transparent"
+                border_color = "#00CC96" if fase == fase_attuale else "#334155"
+                text_color = "#ffffff" if fase == fase_attuale else "#64748b"
+                
+                st.markdown(
+                    f"""
+                    <div style="background-color: {bg_color}; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid {border_color};">
+                        <h4 style="color: {text_color}; margin: 0; font-size: 16px;">{fase}</h4>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
         
-    return df_matrix.round(2), dominant
-
-
-# ==========================================================
-# MODULO B: POSIZIONAMENTO NEL CICLO ECONOMICO (LE 4 FASI)
-# ==========================================================
-
-def fetch_macro_cycle_data():
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * 4) 
-    
-    df_macro = pd.DataFrame()
-    
-    try:
-        fred_series = {
-            'DGS10': '10Y_Yield',
-            'DGS2': '2Y_Yield',
-            'DGS30': '30Y_Yield',
-            'CPIAUCSL': 'CPI_Index'
-        }
-        df_fred = web.DataReader(list(fred_series.keys()), 'fred', start_date, end_date)
-        df_fred = df_fred.rename(columns=fred_series)
+        st.markdown("<br>", unsafe_allow_html=True)
         
-        df_fred['CPI_Index'] = df_fred['CPI_Index'].ffill()
-        df_fred['CPI_YoY'] = df_fred['CPI_Index'].pct_change(periods=252) * 100
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f}%")
+        mc2.metric("Rame/Oro Trend", macro_metrics.get('Copper_Gold_Trend', 'N/D'))
+        mc3.metric("Tassi Reali (Z-Score)", f"{macro_metrics.get('Real_Rates_Z', 0):.2f}")
         
-        yf_data = yf.download(["HG=F", "GC=F"], start=start_date, end=end_date, progress=False)
-        if isinstance(yf_data.columns, pd.MultiIndex):
-            df_yf = yf_data['Close'].rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold'})
-        else:
-            df_yf = yf_data.rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold'})
-            
-        df_macro = pd.merge(df_fred, df_yf, left_index=True, right_index=True, how='inner')
-        df_macro = df_macro.dropna(subset=['10Y_Yield', '2Y_Yield', 'Copper', 'Gold']).sort_index()
-        return df_macro
-
-    except Exception as e:
-        print(f"Errore Modulo B Data Fetching: {e}")
-        return pd.DataFrame()
-
-def calculate_macro_cycle_phase(df_macro):
-    if df_macro.empty or len(df_macro) < 252:
-        return "DATI INSUFFICIENTI", {}
-        
-    df = df_macro.copy()
-    
-    df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
-    df['Copper_Gold_Ratio'] = df['Copper'] / df['Gold']
-    df['Real_Rates'] = df['10Y_Yield'] - df['CPI_YoY'].fillna(0)
-    
-    current_spread = df['Spread_10Y_2Y'].iloc[-1]
-    is_inverted = current_spread < 0
-    
-    df['C_G_SMA200'] = df['Copper_Gold_Ratio'].rolling(window=200).mean()
-    is_copper_gold_bullish = df['Copper_Gold_Ratio'].iloc[-1] > df['C_G_SMA200'].iloc[-1]
-    
-    df['Real_Rates_Z252'] = calculate_rolling_zscore(df['Real_Rates'], window=252)
-    is_real_rates_breakout = df['Real_Rates_Z252'].iloc[-1] > 1.5 
-    
-    df['30Y_Z756'] = calculate_rolling_zscore(df['30Y_Yield'], window=756)
-    is_debasement_risk = df['30Y_Z756'].iloc[-1] > 1.5
-    
-    if is_inverted and not is_copper_gold_bullish:
-        fase = "CONTRAZIONE"
-    elif is_inverted or is_real_rates_breakout:
-        fase = "PICCO / STAGFLAZIONE"
-    elif not is_inverted and is_copper_gold_bullish and not is_debasement_risk:
-        fase = "ESPANSIONE"
+        debasement_status = "⚠️ ATTIVO" if macro_metrics.get('Debasement_Risk') else "🟢 INATTIVO"
+        mc4.metric("Rischio Debasement 30Y", debasement_status)
     else:
-        fase = "RIPRESA"
-        
-    metrics = {
-        "Spread_10Y_2Y": round(current_spread, 2),
-        "Copper_Gold_Trend": "Rialzista" if is_copper_gold_bullish else "Ribassista",
-        "Real_Rates_Z": round(df['Real_Rates_Z252'].iloc[-1], 2),
-        "30Y_Yield_Z": round(df['30Y_Z756'].iloc[-1], 2),
-        "Debasement_Risk": is_debasement_risk
-    }
+        st.warning("⚠️ Dati FRED o Commodities insufficienti per inquadrare il ciclo economico.")
+
+    st.divider()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("💹 1. Vera Liquidità Netta (Trend)")
+        if 'Net_Liquidity' in df.columns and not df['Net_Liquidity'].dropna().empty:
+            st.plotly_chart(px.area(df.dropna(subset=['Net_Liquidity']).tail(250), x="Data", y="Net_Liquidity", color_discrete_sequence=['#00CC96'], template='plotly_dark'), use_container_width=True)
     
-    return fase, metrics
+    with c2:
+        st.subheader("💰 2. M2 Money Supply")
+        if 'M2' in df.columns and not df['M2'].dropna().empty:
+            st.plotly_chart(px.line(df.dropna(subset=['M2']).tail(250), x="Data", y="M2", template='plotly_dark'), use_container_width=True)
+
+    c3, c4 = st.columns(2)
+    with c3:
+        st.subheader("🏆 3. Ratio GOLD / OIL")
+        if 'Ratio_GO' in df.columns and not df['Ratio_GO'].dropna().empty:
+            fig_go = px.line(df.dropna(subset=['Ratio_GO']).tail(100), x="Data", y="Ratio_GO", color_discrete_sequence=['#FFD700'], template='plotly_dark')
+            fig_go.add_hline(y=2.5, line_dash="dash", line_color="red")
+            st.plotly_chart(fig_go, use_container_width=True)
+            
+    with c4:
+        st.subheader("📉 4. Bond: TLT Price vs MOVE")
+        if set(['TLT', 'MOVE']).issubset(df.columns):
+            temp_df = df.dropna(subset=['TLT', 'MOVE']).tail(100)
+            if not temp_df.empty:
+                st.plotly_chart(px.line(temp_df, x="Data", y=["TLT", "MOVE"], color_discrete_map={"TLT": "yellow", "MOVE": "red"}, template='plotly_dark'), use_container_width=True)
+
+    c5, c6 = st.columns(2)
+    with c5:
+        st.subheader("⚖️ 5. Ratio XLY / XLP")
+        if 'Ratio_Risk' in df.columns and not df['Ratio_Risk'].dropna().empty:
+            st.plotly_chart(px.line(df.dropna(subset=['Ratio_Risk']).tail(100), x="Data", y="Ratio_Risk", color_discrete_sequence=['#00D1FF'], template='plotly_dark'), use_container_width=True)
+            
+    with c6:
+        st.subheader("⚖️ 6. Ratio SPY / RSP")
+        if 'Ratio_Br' in df.columns and not df['Ratio_Br'].dropna().empty:
+            fig_br = px.line(df.dropna(subset=['Ratio_Br']).tail(100), x="Data", y="Ratio_Br", color_discrete_sequence=['orange'], template='plotly_dark')
+            fig_br.add_hline(y=3.5, line_dash="dash", line_color="red")
+            st.plotly_chart(fig_br, use_container_width=True)
+
+    c7, c8 = st.columns(2)
+    with c7:
+        st.subheader("📈 7. VIX Term Structure")
+        vix_cols = ["VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y"]
+        if set(vix_cols).issubset(df.columns):
+            t_vals = [last.get(c, np.nan) for c in vix_cols]
+            if not all(pd.isna(t_vals)):
+                fig_vx = go.Figure(go.Scatter(
+                    x=["1D","9D","30D","3M","6M","1Y"], 
+                    y=t_vals, 
+                    mode='lines+markers+text', 
+                    text=[f"{v:.1f}" if not pd.isna(v) else "" for v in t_vals], 
+                    textposition="top center",
+                    connectgaps=True
+                ))
+                fig_vx.update_traces(line=dict(color="red" if last.get('VIX1D',0) > last.get('VIX',0) else "green", width=4))
+                fig_vx.update_layout(template='plotly_dark', margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig_vx, use_container_width=True)
+                
+    with c8:
+        st.subheader("⚡ 8. VVIX vs DXY")
+        if set(['VVIX', 'DXY']).issubset(df.columns):
+            temp_df = df.dropna(subset=['VVIX', 'DXY']).tail(100)
+            if not temp_df.empty:
+                st.plotly_chart(px.line(temp_df, x="Data", y=["VVIX", "DXY"], color_discrete_map={"VVIX": "orange", "DXY": "white"}, template='plotly_dark'), use_container_width=True)
+
+    st.divider()
+    st.subheader("Tabella Master EOD & Serie Storiche Normalizzate")
+    display_df = df.sort_values("Data", ascending=False).head(30).copy()
+    display_df['Data'] = display_df['Data'].dt.strftime('%Y-%m-%d')
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
