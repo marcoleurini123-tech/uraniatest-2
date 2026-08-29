@@ -5,3 +5,4 @@ requests>=2.31.0
 yfinance>=0.2.45
 plotly>=5.24.0
 pillow>=11.0.0
+pandas-datareader>=0.10.0
