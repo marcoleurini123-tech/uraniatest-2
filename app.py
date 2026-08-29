@@ -9,11 +9,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Iniezione CSS Rigorosa (Design minimale)
+# 2. Iniezione CSS Corretta (Header visibile per permettere il toggle della sidebar)
 st.markdown("""
     <style>
         .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
-        header { visibility: hidden; }
         footer { visibility: hidden; }
         #MainMenu { visibility: hidden; }
         [data-testid="stMetricValue"] { font-size: 1.8rem; }
